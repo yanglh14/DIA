@@ -41,7 +41,7 @@ class VCDynamics(object):
         self.vcd_edge = vcd_edge
         self.load_model(self.args.load_optim)
 
-        print("VCD dynamics models created")
+        print("DIA dynamics models created")
         if self.train_mode == 'graph_imit' and not args.tune_teach:
             self.models[self.input_types[0]].freeze()
 
@@ -61,7 +61,7 @@ class VCDynamics(object):
         self.log_dir = logger.get_dir()
         if self.args.use_wandb and args.eval == 0:
             # To use wandb, you need to create an account and run 'wandb login'.
-            wandb.init(project='VCD', name=args.exp_name, resume='allow',
+            wandb.init(project='DIA', name=args.exp_name, resume='allow',
                        id=None, settings=wandb.Settings(start_method='thread'))
             print('Weights & Biases is initialized with run name {}'.format(args.exp_name))
             wandb.config.update(args, allow_val_change=True)

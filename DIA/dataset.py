@@ -7,9 +7,9 @@ from torch_geometric.data import Dataset
 
 import pyflex
 
-from VCD.utils.utils import downsample, load_data, load_data_list, store_h5_data, voxelize_pointcloud, pc_reward_model
-from VCD.utils.camera_utils import get_observable_particle_index, get_observable_particle_index_old, get_world_coords, get_observable_particle_index_3
-from VCD.utils.data_utils import PrivilData
+from DIA.utils.utils import downsample, load_data, load_data_list, store_h5_data, voxelize_pointcloud, pc_reward_model
+from DIA.utils.camera_utils import get_observable_particle_index, get_observable_particle_index_old, get_world_coords, get_observable_particle_index_3
+from DIA.utils.data_utils import PrivilData
 from softgym.utils.visualization import save_numpy_as_gif
 
 
@@ -70,7 +70,7 @@ class ClothDataset(Dataset):
 
         # Cloth and picker information
         # Get partially observed particle index
-        rgbd = self.env.get_rgbd(show_picker=True)
+        rgbd = self.env.get_rgbd(show_picker=False)
         rgb, depth = rgbd[:, :, :3], rgbd[:, :, 3]
 
         world_coordinates = get_world_coords(rgb, depth, self.env, position)
@@ -108,21 +108,33 @@ class ClothDataset(Dataset):
 
             curr_data = self.get_curr_env_data()
             observable_idx, picker_position, downsample_idx = curr_data['observable_idx'], curr_data['picker_position'], curr_data['downsample_idx']
-            pp = np.random.randint(len(observable_idx))
-            picker_position[0] = curr_data['positions'][observable_idx[pp]] + np.array(
-                [0., self.env.picker_radius + self.env.cloth_particle_radius, 0.])  # Pick above the particle
-            picker_position[1] = np.array([100, 100, 100])
-            self.env.action_tool.set_picker_pos(picker_position)
+
+            # pp = np.random.randint(len(observable_idx))
+            # picker_position[0] = curr_data['positions'][observable_idx[pp]] + np.array(
+            #     [0., self.env.picker_radius + self.env.cloth_particle_radius, 0.])  # Pick above the particle
+            # picker_position[1] = np.array([100, 100, 100])
+            # test
+            # current_config = self.env.get_current_config()
+            # ClothSize = current_config['ClothSize']
+            # picker_position[0] = curr_data['positions'][0] + np.array(
+            #     [0., self.env.picker_radius + self.env.cloth_particle_radius, 0.])  # Pick above the particle
+            # picker_position[1] = curr_data['positions'][ClothSize[0]-1] + np.array(
+            #     [0., self.env.picker_radius + self.env.cloth_particle_radius, 0.])  # Pick above the particle
+            #
+            # self.env.action_tool.set_picker_pos(picker_position)
 
             prev_data = self.get_curr_env_data()  # Get new picker position
 
-            policy_info = self._generate_policy_info()
+            # policy_info = self._generate_policy_info()
+
             if self.args.gen_gif:
                 frames_rgb, frames_depth = [prev_data['rgb']], [prev_data['depth']]
             for j in range(1, self.args.time_step):
+
                 if not self._data_test(prev_data):
                     break
-                action = self._collect_policy(j, policy_info)
+                action = self._collect_policy()
+
                 self.env.step(action)
                 curr_data = self.get_curr_env_data()
 
@@ -183,16 +195,23 @@ class ClothDataset(Dataset):
         policy_info['delta_move'] = policy_info['move_distance'] / policy_info['move_steps']
         return policy_info
 
-    def _collect_policy(self, timestep, policy_info):
+    def _collect_policy(self):
         """ Policy for collecting data"""
-        if timestep <= policy_info['move_steps']:
-            delta_move = policy_info['delta_move']
-            action = np.zeros_like(self.env.action_space.sample())
-            action[3] = 1
-            action[:3] = delta_move * policy_info['move_direction']
-        else:
-            action = np.zeros_like(self.env.action_space.sample())
-            # self.env.action_tool.set_picker_pos([100, 100, 100]) # Set picker away
+        # randomly select a move direction and a move distance
+
+        move_direction = np.array([1, 0, 0])
+        move_direction = move_direction / np.linalg.norm(move_direction)
+        move_distance = np.random.uniform(
+            self.args.collect_data_delta_move_min,
+            self.args.collect_data_delta_move_max)
+
+        action = np.zeros_like(self.env.action_space.sample())
+
+        action[:3] = move_distance * move_direction
+
+        action[4:7] = move_distance * move_direction
+        action[7],action[3] = 1,1
+
         return action
 
     def _data_test(self, data):
