@@ -4,19 +4,20 @@ import os.path as osp
 import json
 from chester import logger
 
-from DIA.utils.utils import set_resource,configure_logger, configure_seed
+from DIA.utils.utils import set_resource, configure_logger, configure_seed, vv_to_args
 from DIA.dynamics import DynamicIA
+from DIA.edge import Edge
 
 def get_default_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--exp_name', type=str, default='dia', help='Experiment name')
-    parser.add_argument('--log_dir', type=str, default='data/log', help='Logging directory')
+    parser.add_argument('--log_dir', type=str, default='data/log_test', help='Logging directory')
     parser.add_argument('--seed', type=int, default=0, help='Random seed')
 
     #ENV
     parser.add_argument('--env_name', type=str, default='ClothDrop', help='Environment name')
     parser.add_argument('--cached_states_path', type=str, default='dia.pkl', help='Path to cached states')
-    parser.add_argument('--num_variations', type=int, default=1, help='Number of variations in the dataset')
+    parser.add_argument('--num_variations', type=int, default=100, help='Number of variations in the dataset')
     parser.add_argument('--partial_observable', type=bool, default=True, help="Whether only the partial point cloud can be observed")
     parser.add_argument('--particle_radius', type=float, default=0.00625, help='Particle radius for the cloth')
     ## pyflex shape state
@@ -28,9 +29,13 @@ def get_default_args():
     parser.add_argument('--dt', type=float, default=1. / 100.)
     parser.add_argument('--pred_time_interval', type=int, default=5, help='Interval of timesteps between each dynamics prediction (model dt)')
     parser.add_argument('--train_valid_ratio', type=float, default=0.9, help="Ratio between training and validation")
-    parser.add_argument('--dataf', type=str, default='./data/dia/', help='Path to dataset')
-    parser.add_argument('--gen_data', type=int, default=1, help='Whether to generate dataset')
-    parser.add_argument('--gen_gif', type=bool, default=1, help='Whether to also save gif of each trajectory (for debugging)')
+    parser.add_argument('--dataf', type=str, default='./data/dia_test/', help='Path to dataset')
+    parser.add_argument('--gen_data', type=int, default=0, help='Whether to generate dataset')
+    parser.add_argument('--gen_gif', type=int, default=0, help='Whether to also save gif of each trajectory (for debugging)')
+    parser.add_argument('--collect_data_delta_move_min', type=float, default=0.0)
+    parser.add_argument('--collect_data_delta_move_max', type=float, default=0.1) # 0.1 for acc control and 0.03 for vel control
+    parser.add_argument('--collect_data_delta_acc_min', type=float, default=0.0)
+    parser.add_argument('--collect_data_delta_acc_max', type=float, default=1.0) # 0.1 for acc control and 0.03 for vel control
 
     # Model
     parser.add_argument('--global_size', type=int, default=128, help="Number of hidden nodes for global in GNN")
@@ -40,8 +45,6 @@ def get_default_args():
     parser.add_argument('--neighbor_radius', type=float, default=0.045, help="Radius for connecting nearby edges")
     parser.add_argument('--use_rest_distance', type=bool, default=True, help="Subtract the rest distance for the edge attribute of mesh edges")
     parser.add_argument('--use_mesh_edge', type=bool, default=True)
-    parser.add_argument('--collect_data_delta_move_min', type=float, default=0.01)
-    parser.add_argument('--collect_data_delta_move_max', type=float, default=0.02)
     parser.add_argument('--proc_layer', type=int, default=10, help="Number of processor layers in GNN")
     parser.add_argument('--state_dim', type=int, default=18,
                         help="Dim of node feature input. Computed based on n_his: 3 x 5 + 1 dist to ground + 2 one-hot encoding of picked particle")
@@ -63,6 +66,26 @@ def get_default_args():
     parser.add_argument('--save_model_interval', type=int, default=5, help='Save the model every N epochs during training')
     parser.add_argument('--use_wandb', type=bool, default=False, help='Use weight and bias for logging')
 
+    # Resume training
+    parser.add_argument('--edge_model_path', type=str, default=None, help='Path to a trained edgeGNN model')
+    parser.add_argument('--full_dyn_path', type=str, default=None, help='Path to a dynamics model using full point cloud')
+    parser.add_argument('--partial_dyn_path', type=str, default=None, help='Path to a dynamics model using partial point cloud')
+    parser.add_argument('--load_optim', type=bool, default=False, help='Load optimizer when resume training')
+
+    # For graph imitation
+    parser.add_argument('--vsbl_lr', type=float, default=1e-4, help='Learning rate for visible(vsbl) point cloud dynamics')
+    parser.add_argument('--full_lr', type=float, default=1e-4, help='Learning rate for full point cloud dynamics')
+    parser.add_argument('--tune_teach', type=bool, default=False, help='Whether to allow teacher to adapt during graph imitation')
+    parser.add_argument('--copy_teach', type=list, default=['encoder', 'decoder'], help="Which modules of the student are initialized from teacher")
+    parser.add_argument('--imit_w_lat', type=float, default=1, help='Weight for imitating the global feature')
+    parser.add_argument('--imit_w', type=float, default=5, help='Weight for imitation loss (vs student accel loss)')
+    parser.add_argument('--reward_w', type=float, default=1e5, help='Weight for reward loss')
+
+    # For ablation
+    parser.add_argument('--fix_collision_edge', type=bool, default=False, help='Ablation that use fixed collision edges during rollout')
+    parser.add_argument('--use_collision_as_mesh_edge', type=bool, default=False,
+                        help='If True, will not use gt mesh edges, but use all collision edges as mesh edges.')
+
 
     args = parser.parse_args()
 
@@ -77,7 +100,7 @@ def create_env(args):
     env_args['num_variations'] = args.num_variations
 
     env_args['render'] = True
-    env_args['headless'] = False
+    env_args['headless'] = True
     env_args['render_mode'] = 'cloth' if args.gen_data else 'particle'
     env_args['camera_name'] = 'default_camera'
     env_args['camera_width'] = 360
@@ -103,7 +126,17 @@ def main():
     with open(osp.join(logger.get_dir(), 'variant.json'), 'w') as f:
         json.dump(args.__dict__, f, indent=2, sort_keys=True)
 
-    dynamic_model = DynamicIA(args, env)
+    # load vcd_edge
+    if args.edge_model_path is not None:
+        edge_model_vv = json.load(open(osp.join(args.edge_model_path, 'variant.json')))
+        edge_model_args = vv_to_args(edge_model_vv)
+        dia_edge = Edge(edge_model_args, env=env)
+        dia_edge.load_model(args.edge_model_path)
+        print('EdgeGNN successfully loaded from ', args.edge_model_path, flush=True)
+    else:
+        dia_edge = None
+
+    dynamic_model = DynamicIA(args, env, dia_edge)
 
     if args.gen_data:
         dynamic_model.generate_dataset()

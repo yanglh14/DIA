@@ -206,7 +206,6 @@ class VCDynamics(object):
                                 self.optims[m_name].step()
 
                         epoch_infos[m_name].update_by_add(iter_infos[m_name])  # Aggregate info
-
                 # rollout evaluation
                 nstep_eval_rollout = self.args.nstep_eval_rollout
                 data_folder = osp.join(self.args.dataf, phase)

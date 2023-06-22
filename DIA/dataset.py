@@ -12,6 +12,7 @@ from DIA.utils.camera_utils import get_observable_particle_index, get_observable
 from DIA.utils.data_utils import PrivilData
 from softgym.utils.visualization import save_numpy_as_gif
 
+import matplotlib.pyplot as plt
 
 class ClothDataset(Dataset):
     def __init__(self, args, input_types, phase, env):
@@ -70,7 +71,7 @@ class ClothDataset(Dataset):
 
         # Cloth and picker information
         # Get partially observed particle index
-        rgbd = self.env.get_rgbd(show_picker=False)
+        rgbd = self.env.get_rgbd(show_picker=True)
         rgb, depth = rgbd[:, :, :3], rgbd[:, :, 3]
 
         world_coordinates = get_world_coords(rgb, depth, self.env, position)
@@ -105,38 +106,29 @@ class ClothDataset(Dataset):
             rollout_dir = os.path.join(self.data_dir, str(rollout_idx))
             os.system('mkdir -p ' + rollout_dir)
             self.env.reset()
-
-            curr_data = self.get_curr_env_data()
-            observable_idx, picker_position, downsample_idx = curr_data['observable_idx'], curr_data['picker_position'], curr_data['downsample_idx']
-
-            # pp = np.random.randint(len(observable_idx))
-            # picker_position[0] = curr_data['positions'][observable_idx[pp]] + np.array(
-            #     [0., self.env.picker_radius + self.env.cloth_particle_radius, 0.])  # Pick above the particle
-            # picker_position[1] = np.array([100, 100, 100])
-            # test
-            # current_config = self.env.get_current_config()
-            # ClothSize = current_config['ClothSize']
-            # picker_position[0] = curr_data['positions'][0] + np.array(
-            #     [0., self.env.picker_radius + self.env.cloth_particle_radius, 0.])  # Pick above the particle
-            # picker_position[1] = curr_data['positions'][ClothSize[0]-1] + np.array(
-            #     [0., self.env.picker_radius + self.env.cloth_particle_radius, 0.])  # Pick above the particle
-            #
-            # self.env.action_tool.set_picker_pos(picker_position)
-
+            self.env.action_tool.update_picker_boundary([-0.3, 0.05, -0.5], [0.5, 2, 0.5])
             prev_data = self.get_curr_env_data()  # Get new picker position
-
-            # policy_info = self._generate_policy_info()
 
             if self.args.gen_gif:
                 frames_rgb, frames_depth = [prev_data['rgb']], [prev_data['depth']]
+
+            actions = self._collect_policy_v3() # Get actions for the whole episode, len=99
+
+            picker_position_list = []
             for j in range(1, self.args.time_step):
 
+                self.env.action_tool.update_picker_boundary([-0.3, 0.0, -0.5], [0.5, 2, 0.5])
                 if not self._data_test(prev_data):
-                    break
-                action = self._collect_policy()
+                    # raise error
+                    raise Exception('_data_test failed: Number of point cloud too small')
+
+                # action = self._collect_policy(j, self.args.time_step)
+                # action = self._collect_policy_v3(j, self.args.time_step)
+                action = actions[j - 1]
 
                 self.env.step(action)
                 curr_data = self.get_curr_env_data()
+                picker_position_list.append(curr_data['picker_position'])
 
                 prev_data['velocities'] = (curr_data['positions'] - prev_data['positions']) / self.dt
                 prev_data['action'] = action
@@ -151,6 +143,20 @@ class ClothDataset(Dataset):
             if self.args.gen_gif:
                 save_numpy_as_gif(np.array(np.array(frames_rgb) * 255).clip(0., 255.), os.path.join(rollout_dir, 'rgb.gif'))
                 save_numpy_as_gif(np.array(frames_depth) * 255., os.path.join(rollout_dir, 'depth.gif'))
+
+                # plot the picker position in 3 axis
+                picker_position_list = np.array(picker_position_list)
+                fig, (ax0, ax1, ax2) = plt.subplots(nrows=1, ncols=3, sharex=True,
+                                                    figsize=(12, 6))
+                ax0.plot(picker_position_list[:,0, 0])
+                ax1.plot(picker_position_list[:,0, 1])
+                ax2.plot(picker_position_list[:,0, 2])
+                plt.savefig(os.path.join(rollout_dir, 'picker_position.png'))
+                plt.close(fig)
+                plt.plot(picker_position_list[:,0, 0], picker_position_list[:,0, 1])
+                plt.savefig(os.path.join(rollout_dir, 'X-Z.png'))
+                plt.close(fig)
+
             # the last step has no action, and is not used in training
             prev_data['action'], prev_data['velocities'] = 0, 0
             store_h5_data(self.data_names, prev_data, os.path.join(rollout_dir, str(self.args.time_step - 1) + '.h5'))
@@ -182,7 +188,9 @@ class ClothDataset(Dataset):
                 'picked_particles': picked_points,
                 'picked_status': picked_status}
 
+
     def _generate_policy_info(self):
+        """ not used anymore"""
         # randomly select a move direction and a move distance
         move_direction = np.random.rand(3) - 0.5
         move_direction[1] = np.random.uniform(0, 0.5)
@@ -195,11 +203,18 @@ class ClothDataset(Dataset):
         policy_info['delta_move'] = policy_info['move_distance'] / policy_info['move_steps']
         return policy_info
 
-    def _collect_policy(self):
-        """ Policy for collecting data"""
+    def _collect_policy(self, step, max_step):
+        """ Policy for collecting data - velocity control"""
         # randomly select a move direction and a move distance
+        if step <= max_step/2:
+            move_direction = np.array([np.random.rand(1)[0]*5, -np.random.rand(1)[0], 0])
 
-        move_direction = np.array([1, 0, 0])
+            move_direction = np.array([np.random.rand(1)[0]*0.2, -5*np.random.rand(1)[0], 0])
+
+        else:
+            move_direction = np.array([-np.random.rand(1)[0]*5, -np.random.rand(1)[0], 0])
+            move_direction = np.array([-np.random.rand(1)[0]*0.2, -5*np.random.rand(1)[0], 0])
+
         move_direction = move_direction / np.linalg.norm(move_direction)
         move_distance = np.random.uniform(
             self.args.collect_data_delta_move_min,
@@ -214,6 +229,70 @@ class ClothDataset(Dataset):
 
         return action
 
+    def _collect_policy_v2(self, step, max_step):
+        """ Policy for collecting data - acceleration control"""
+        if step ==1:
+            self.state = np.zeros(6)
+        if step <= max_step/4:
+            acc_direction = np.array([np.random.rand(1)[0]*5, -np.random.rand(1)[0], 0])
+        elif step <= max_step/2:
+            acc_direction = np.array([-np.random.rand(1)[0]*5, -np.random.rand(1)[0], 0])
+        elif step <= max_step*3/4:
+            acc_direction = np.array([-np.random.rand(1)[0]*5, np.random.rand(1)[0], 0])
+        else:
+            acc_direction = np.array([np.random.rand(1)[0]*5, np.random.rand(1)[0], 0])
+
+        acc_direction = acc_direction / np.linalg.norm(acc_direction)
+        acc_value = np.random.uniform(
+            self.args.collect_data_delta_move_min,
+            self.args.collect_data_delta_move_max)
+
+        self.state[3:6] = acc_value * acc_direction
+
+        self.state[0:3] += self.state[3:6] * self.args.dt
+
+        action = np.zeros_like(self.env.action_space.sample())
+        action[:3],action[4:7] = self.state[0:3],self.state[0:3]
+        action[7],action[3] = 1,1
+
+        return action
+
+    def _collect_policy_v3(self):
+        """ Policy for collecting data - acceleration control and ref trajectory"""
+        acc_delta_value = np.random.uniform(
+            self.args.collect_data_delta_acc_min,
+            self.args.collect_data_delta_acc_max, size=self.args.time_step)
+
+        action_list = []
+
+        for step in range(1, self.args.time_step):
+            if step ==1:
+                self.state = np.zeros(6)
+            if step <= self.args.time_step/4:
+                acc_direction = np.array([5, -2, 0])
+
+            elif step <= self.args.time_step/2:
+                acc_direction = np.array([-5, -2, 0])
+
+            elif step <= self.args.time_step*3/4:
+                acc_direction = np.array([-5, 2, 0])
+
+            else:
+                acc_direction = np.array([5, 2, 0])
+
+            acc_direction[0] += acc_delta_value[step]
+
+            self.state[3:6] = acc_direction * self.args.dt
+
+            self.state[0:3] += self.state[3:6] * self.args.dt
+
+            action = np.zeros_like(self.env.action_space.sample())
+            action[:3],action[4:7] = self.state[0:3],self.state[0:3]
+            action[7],action[3] = 1,1
+
+            action_list.append(action)
+
+        return action_list
     def _data_test(self, data):
         """ Filter out cases where cloth is moved out of the view or when number of voxelized particles is larger than number of partial particles"""
         pointcloud = data['pointcloud']
@@ -355,6 +434,8 @@ class ClothDataset(Dataset):
                 else:
                     picked_particles[i] = int(-1)
         picked_status = (picked_velocity, picked_pos, new_picker_pos)
+        for i in range(len(picked_particles)): assert picked_particles[i] != -1, "should have 2 pickers"
+
         return picked_particles, picked_status
 
     def _compute_node_attr(self, vox_pc, picked_points, velocity_his):
@@ -514,12 +595,18 @@ class ClothDataset(Dataset):
 
     def load_rollout_data(self, idx_rollout, idx_timestep):
         data_cur = load_data(self.data_dir, idx_rollout, idx_timestep, self.data_names)
+        data_nxt = load_data(self.data_dir, idx_rollout, idx_timestep + self.args.pred_time_interval, self.data_names)
+
         # accumulate action if we need to predict multiple steps
         action = data_cur['action']
-        for t in range(1, self.args.pred_time_interval):
-            t_action = load_data_list(self.data_dir, idx_rollout, idx_timestep + t, ['action'])[0]
-            # TODO: pass it if picker drops in the middle
-            action[:3] += t_action[:3]
+        # for t in range(1, self.args.pred_time_interval):
+        #     t_action = load_data_list(self.data_dir, idx_rollout, idx_timestep + t, ['action'])[0]
+        #     # TODO: pass it if picker drops in the middle
+        #     action[:3] += t_action[:3]
+
+        for i in range(self.env.action_tool.num_picker):
+            action[i*4:i*4+3] = data_nxt['picker_position'][i,:3] - data_cur['picker_position'][i,:3]
+
         data_cur['action'] = action
         data_cur['gt_reward_crt'] = pc_reward_model(data_cur['positions'][data_cur['downsample_idx']])
         return data_cur
@@ -557,10 +644,13 @@ class ClothDataset(Dataset):
 
         # accumulate action if we need to predict multiple steps
         action = data_cur['action']
-        for t in range(1, pred_time_interval):
-            t_action = load_data_list(self.data_dir, idx_rollout, idx_timestep + t, ['action'])[0]
-            # TODO: pass it if picker drops in the middle
-            action[:3] += t_action[:3]
+        # for t in range(1, pred_time_interval):
+        #     t_action = load_data_list(self.data_dir, idx_rollout, idx_timestep + t, ['action'])[0]
+        #     # TODO: pass it if picker drops in the middle
+        #
+        #     action[:3] += t_action[:3]
+        for i in range(self.env.action_tool.num_picker):
+            action[i*4:i*4+3] = data_nxt['picker_position'][i,:3] - data_cur['picker_position'][i,:3]
 
         # Use clean observable point cloud for bi-partite matching
         # particle_pc_mapped_idx: For each point in pc, give the index of the closest point on the visible downsample mesh

@@ -19,19 +19,19 @@ def get_default_args():
     # Env
     parser.add_argument('--env_name', type=str, default='ClothFlatten')
     parser.add_argument('--cached_states_path', type=str, default='1213_release_n1000.pkl')
-    parser.add_argument('--num_variations', type=int, default=1000)
+    parser.add_argument('--num_variations', type=int, default=100)
     parser.add_argument('--partial_observable', type=bool, default=True, help="Whether only the partial point cloud can be observed")
     parser.add_argument('--particle_radius', type=float, default=0.00625, help='Particle radius for the cloth')
     ## pyflex shape state
     parser.add_argument('--shape_state_dim', type=int, default=14, help="[xyz, xyz_last, quat(4), quat_last(4)]")
 
     # Dataset
-    parser.add_argument('--n_rollout', type=int, default=2000, help='Number of training trajectories')
+    parser.add_argument('--n_rollout', type=int, default=100, help='Number of training trajectories')
     parser.add_argument('--time_step', type=int, default=100, help='Time steps per trajectory')
     parser.add_argument('--dt', type=float, default=1. / 100.)
     parser.add_argument('--pred_time_interval', type=int, default=5, help='Interval of timesteps between each dynamics prediction (model dt)')
     parser.add_argument('--train_valid_ratio', type=float, default=0.9, help="Ratio between training and validation")
-    parser.add_argument('--dataf', type=str, default='./data/release/', help='Path to dataset')
+    parser.add_argument('--dataf', type=str, default='./data/vcd/', help='Path to dataset')
     parser.add_argument('--gen_data', type=int, default=0, help='Whether to generate dataset')
     parser.add_argument('--gen_gif', type=bool, default=0, help='Whether to also save gif of each trajectory (for debugging)')
 
@@ -100,7 +100,7 @@ def create_env(args):
     env_args['num_variations'] = args.num_variations
 
     env_args['render'] = True
-    env_args['headless'] = False
+    env_args['headless'] = True
     env_args['render_mode'] = 'cloth' if args.gen_data else 'particle'
     env_args['camera_name'] = 'default_camera'
     env_args['camera_width'] = 360
