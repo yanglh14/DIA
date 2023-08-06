@@ -11,7 +11,8 @@ class RandomShootingUVPickandPlacePlanner():
                     move_distance_range=[0.05, 0.2], gpu_num=1,
                     image_size=None, normalize_info=None, delta_y_range=None, 
                     matrix_world_to_camera=np.identity(4), task='flatten',
-                    use_pred_rwd=False):
+                    use_pred_rwd=False,
+                    delta_acc_range=[0, 1], dt=0.01, env=None, args=None):
         """
         Random Shooting planner.
         """
@@ -34,10 +35,14 @@ class RandomShootingUVPickandPlacePlanner():
         self.image_size = image_size
         self.task = task
 
+        self.delta_acc_range = delta_acc_range
+        self.dt = dt
+        self.env = env
+        self.args = args
     def project_3d(self, pos):
         return project_to_image(self.matrix_world_to_camera, pos, self.image_size[0], self.image_size[1])
 
-    def get_action(self, init_data, robot_exp=False, cloth_mask=None, check_mask=None, m_name='vsbl'):
+    def get_action(self, init_data,control_sequence_idx = 0, control_sequence_num=20,  robot_exp=False, check_mask=None, m_name='vsbl'):
         """
         check_mask: Used to filter out place points that are on the cloth.
         init_data should be a list that include:
@@ -45,19 +50,12 @@ class RandomShootingUVPickandPlacePlanner():
             note: require position, velocity to be already downsampled
 
         """
-        args = self.dynamics.args
         data = init_data.copy()
         data['picked_points'] = [-1, -1]
 
-        pull_step, wait_step = self.pull_step, self.wait_step
-
         # add a no-op action
-        pick_try_num = self.num_pick + 1 if self.task == 'flatten' else self.num_pick
-        actions = np.zeros((pick_try_num, pull_step + wait_step, 8))
+        sampling_num = self.num_pick
         pointcloud = copy.deepcopy(data['pointcloud'])
-
-        picker_pos = data['picker_position'][0][:3] if data['picker_position'] is not None else None
-        bb_margin = 30
 
         # paralleled version of generating action sequences
         if robot_exp:
@@ -144,35 +142,26 @@ class RandomShootingUVPickandPlacePlanner():
                 picked_particles.append(-1)
                 move_vec.append([0., 0., 0.])
         else:  # simulation planning
-            us, vs = self.project_3d(pointcloud)
+            if control_sequence_idx==0:
+                self.tool_state = np.zeros(6)
+
             params = [
-                (us, vs, self.image_size, pointcloud, pull_step,
-                self.delta_y_range, bb_margin, self.matrix_world_to_camera,
-                self.move_distance_low, self.move_distance_high, cloth_mask, self.task) 
+                (control_sequence_idx, control_sequence_num, self.delta_acc_range, self.dt, self.env, self.args.pred_time_interval, self.tool_state.copy())
                 for i in range(self.num_pick)
             ]
-            results = self.pool.map(parallel_generate_actions, params)
-            delta_moves, start_poses, after_poses = [x[0] for x in results], [x[1] for x in results], [x[2] for x in results]
-            if self.task == 'flatten': # add a no-op action
-                start_poses.append(data['picker_position'][0, :])
-                after_poses.append(data['picker_position'][0, :])
+            if self.num_worker > 0:
+                results = self.pool.map(_parallel_generate_actions, params)
+            else:
+                results = [_parallel_generate_actions(param) for param in params]
 
-            actions[:-1, :pull_step, :3] = np.vstack(delta_moves)[:, None, :]
-            actions[:-1, :pull_step, 3] = 1
-            actions[:, :, 4:] = 0 
-            move_vec = None
+            actions = np.array(results)
 
         # parallely rollout the dynamics model with the sampled action seqeunces
         data_cpy = copy.deepcopy(data)
         if self.num_worker > 0:
-            job_each_gpu = pick_try_num // self.gpu_num
+            job_each_gpu = sampling_num // self.gpu_num
             params = []
-            for i in range(pick_try_num):
-                if robot_exp:
-                    data_cpy['picked_points'] = [picked_particles[i], -1]
-                else:
-                    data_cpy['picked_points'] = [-1, -1]
-                    data_cpy['picker_position'][0, :] = start_poses[i]
+            for i in range(sampling_num):
 
                 gpu_id = i // job_each_gpu if i < self.gpu_num * job_each_gpu else i % self.gpu_num
                 params.append(
@@ -181,11 +170,12 @@ class RandomShootingUVPickandPlacePlanner():
                         reward_model=self.reward_model, cuda_idx=gpu_id, robot_exp=robot_exp,
                     )
                 )
-            results = self.pool.map(self.dynamics.rollout, params, chunksize=max(1, pick_try_num // self.num_worker))
+            results = self.pool.map(self.dynamics.rollout, params, chunksize=max(1, sampling_num // self.num_worker))
             returns = [x['final_ret'] for x in results]
         else: # sequentially rollout each sampled action trajectory
             returns, results = [], []
-            for i in range(pick_try_num):
+            for i in range(sampling_num):
+                assert actions[i].shape[-1] == 8
                 res = self.dynamics.rollout(
                     dict(
                         model_input_data=copy.deepcopy(data_cpy), actions=actions[i], m_name=m_name,
@@ -196,25 +186,24 @@ class RandomShootingUVPickandPlacePlanner():
 
         ret_info = {}
         highest_return_idx = np.argmax(returns)
+        self.tool_state[:3] = actions[highest_return_idx, 0, :3]
 
         ret_info['highest_return_idx'] = highest_return_idx
+        ret_info['highest_return'] = returns[highest_return_idx]
         action_seq = actions[highest_return_idx]
-        if robot_exp:
-            ret_info['waypoints'] = np.array(waypoints[highest_return_idx]).copy()
-            ret_info['all_candidate'] = np.array(waypoints[:-1])
-            ret_info['all_candidate_rewards'] = np.array(returns[:-1])
-        else:
-            ret_info['start_pos'] = start_poses[highest_return_idx]
-            ret_info['after_pos'] = after_poses[highest_return_idx]
+        # if robot_exp:
+        #     ret_info['waypoints'] = np.array(waypoints[highest_return_idx]).copy()
+        #     ret_info['all_candidate'] = np.array(waypoints[:-1])
+        #     ret_info['all_candidate_rewards'] = np.array(returns[:-1])
+        # else:
+        #     ret_info['start_pos'] = start_poses[highest_return_idx]
+        #     ret_info['after_pos'] = after_poses[highest_return_idx]
 
         model_predict_particle_positions = results[highest_return_idx]['model_positions']
         model_predict_shape_positions = results[highest_return_idx]['shape_positions']
         predicted_edges = results[highest_return_idx]['mesh_edges']
-        if move_vec is not None:
-            ret_info['picked_pos'] = pointcloud[picked_particles[highest_return_idx]]
-            ret_info['move_vec'] = move_vec[highest_return_idx]
 
-        return action_seq, model_predict_particle_positions, model_predict_shape_positions, ret_info, predicted_edges
+        return action_seq, model_predict_particle_positions, model_predict_shape_positions, ret_info, predicted_edges, results
 
 
 def pos_in_image(after_pos, matrix_world_to_camera, image_size):
@@ -225,6 +214,41 @@ def pos_in_image(after_pos, matrix_world_to_camera, image_size):
     else:
         return False
 
+def _parallel_generate_actions(args):
+    control_sequence_idx, control_sequence_num, delta_acc_range, dt, env, pred_time_interval,state = args
+    acc_delta_value = np.random.uniform(
+        delta_acc_range[0],
+        delta_acc_range[1], size=control_sequence_num)
+
+    action_list = []
+
+    for step in range(control_sequence_idx, control_sequence_num):
+
+        if step < control_sequence_num/ 4:
+            acc_direction = np.array([5., -2., 0])
+
+        elif step < control_sequence_num / 2:
+            acc_direction = np.array([-5., -2., 0])
+
+        elif step < control_sequence_num * 3 / 4:
+            acc_direction = np.array([-5., 2., 0])
+
+        else:
+            acc_direction = np.array([5., 2., 0])
+
+        acc_direction[0] = acc_direction[0] + acc_delta_value[step]
+
+        state[3:6] = acc_direction * dt * pred_time_interval
+
+        state[0:3] += state[3:6] * dt * pred_time_interval
+
+        action = np.zeros_like(env.action_space.sample())
+        action[:3], action[4:7] = state[0:3], state[0:3]
+        action[7], action[3] = 1, 1
+
+        action_list.append(action)
+
+    return action_list
 
 def parallel_generate_actions(args):
     us, vs, image_size, pointcloud, pull_step, delta_y_range, bb_margin, matrix_world_to_camera, move_distance_low, move_distance_high, cloth_mask, task = args

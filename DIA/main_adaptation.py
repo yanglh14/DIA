@@ -5,8 +5,7 @@ import json
 from chester import logger
 
 from DIA.utils.utils import set_resource, configure_logger, configure_seed, vv_to_args
-from DIA.dynamics import DynamicIA
-from DIA.edge import Edge
+from DIA.adaptation_model import AdaptationModel
 
 def get_default_args():
     parser = argparse.ArgumentParser()
@@ -35,7 +34,7 @@ def get_default_args():
     parser.add_argument('--collect_data_delta_move_min', type=float, default=0.0)
     parser.add_argument('--collect_data_delta_move_max', type=float, default=0.1) # 0.1 for acc control and 0.03 for vel control
     parser.add_argument('--collect_data_delta_acc_min', type=float, default=-0.5)
-    parser.add_argument('--collect_data_delta_acc_max', type=float, default=0.5) # 0.1 for acc control and 0.03 for vel control
+    parser.add_argument('--collect_data_delta_acc_max', type=float, default=1.0) # 0.1 for acc control and 0.03 for vel control
 
     # Model
     parser.add_argument('--global_size', type=int, default=128, help="Number of hidden nodes for global in GNN")
@@ -126,21 +125,9 @@ def main():
     with open(osp.join(logger.get_dir(), 'variant.json'), 'w') as f:
         json.dump(args.__dict__, f, indent=2, sort_keys=True)
 
-    # load vcd_edge
-    if args.edge_model_path is not None:
-        edge_model_vv = json.load(open(osp.join(args.edge_model_path, 'variant.json')))
-        edge_model_args = vv_to_args(edge_model_vv)
-        dia_edge = Edge(edge_model_args, env=env)
-        dia_edge.load_model(args.edge_model_path)
-        print('EdgeGNN successfully loaded from ', args.edge_model_path, flush=True)
-    else:
-        dia_edge = None
 
-    dynamic_model = DynamicIA(args, env, dia_edge)
+    adaptation_model = AdaptationModel(args, env)
 
-    if args.gen_data:
-        dynamic_model.generate_dataset()
-    else:
-        dynamic_model.train()
+    AdaptationModel.train()
 if __name__ == '__main__':
     main()

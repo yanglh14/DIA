@@ -8,7 +8,7 @@ from DIA.dataset import ClothDataset
 from DIA.utils.utils import load_data, voxelize_pointcloud
 
 
-class ClothDatasetPointCloudEdge(ClothDataset):
+class ClothDatasetAdaptation(ClothDataset):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 

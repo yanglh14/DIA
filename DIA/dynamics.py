@@ -17,7 +17,7 @@ from softgym.utils.visualization import save_numpy_as_gif
 from DIA.models import GNN
 from DIA.dataset import ClothDataset
 from DIA.utils.data_utils import AggDict
-from DIA.utils.utils import extract_numbers, pc_reward_model, visualize
+from DIA.utils.utils import extract_numbers, pc_reward_model, visualize, cloth_drop_reward_fuc
 from DIA.utils.camera_utils import get_matrix_world_to_camera, project_to_image
 
 
@@ -151,7 +151,7 @@ class DynamicIA(object):
         st_epoch = self.load_epoch if hasattr(self, 'load_epoch') else 0
         print('st epoch ', st_epoch)
         best_valid_loss = {m_name: np.inf for m_name in self.models}
-        phases = ['train', 'valid'] if self.args.eval == 0 else ['valid']
+        phases = ['train','valid'] if self.args.eval == 0 else ['valid']
         for epoch in range(st_epoch, self.args.n_epoch):
             for phase in phases:
                 self.set_mode(phase)
@@ -234,7 +234,8 @@ class DynamicIA(object):
                         mesh_edges = traj_rollout_info['mesh_edges']
                         if mesh_edges is not None:  # Visualization of mesh edges on the predicted model
                             frames_edge_visual = copy.deepcopy(frames_model)
-                            matrix_world_to_camera = get_matrix_world_to_camera()[:3, :]  # 3 x 4
+                            matrix_world_to_camera = get_matrix_world_to_camera(self.env.camera_params[self.env.camera_name]['pos'],
+                                                                                self.env.camera_params[self.env.camera_name]['angle'])[:3, :]  # 3 x 4
                             for t in range(len(frames_edge_visual)):
                                 u, v = project_to_image(matrix_world_to_camera, traj_rollout_info['model_positions'][t])
                                 for edge_idx in range(mesh_edges.shape[1]):
@@ -264,11 +265,11 @@ class DynamicIA(object):
                     for m_name, model in self.models.items():
                         suffix = '{}'.format(epoch)
                         model.save_model(self.log_dir, m_name, suffix, self.optims[m_name])
-
+                # Todo : bug when determining best model
                 if phase == 'valid':
                     for m_name, model in self.models.items():
                         epoch_info = epoch_infos[m_name]
-                        cur_loss = epoch_info[f"{m_name}/{phase}/" + 'total_loss']
+                        cur_loss = epoch_info['total_loss'].item()
                         if not self.args.fixed_lr:
                             self.schedulers[m_name].step(cur_loss)
                         if cur_loss < best_valid_loss[m_name]:
@@ -418,6 +419,14 @@ class DynamicIA(object):
 
             if t == H - 1:
                 final_ret = reward
+                current_config = self.env.get_current_config()
+                # in training mode, no target_pos is provided; in planning mode, target_pos is provided
+                if 'target_pos' in current_config:
+
+                    target_pos = current_config['target_pos']
+                    cloth_size = current_config['ClothSize']
+                    final_ret = cloth_drop_reward_fuc(pc_pos, target_pos, cloth_size, observable_particle_index)
+
         if mesh_edges is None:  # No mesh edges input during training
             mesh_edges = data['mesh_edges']  # This is modified inside prepare_transition function
         return dict(final_ret=final_ret,
@@ -433,6 +442,7 @@ class DynamicIA(object):
         pred_time_interval = self.args.pred_time_interval
         pred_vel = velocity_his[:, -3:] + pred_accel * self.args.dt * pred_time_interval
         pc_pos = pc_pos + pred_vel * self.args.dt * pred_time_interval
+        pc_pos[:, 1] = np.maximum(pc_pos[:, 1], self.args.particle_radius)  # z should be non-negative
 
         # udpate position and velocity from the model prediction
         velocity_his = np.hstack([velocity_his[:, 3:], pred_vel])

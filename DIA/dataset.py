@@ -55,7 +55,7 @@ class ClothDataset(Dataset):
                            'observable_idx',  # Indexes of the observed particles
                            'pointcloud']  # point cloud position by back-projecting the depth image
         self.vcd_edge = None
-
+        self.skipped = 0
     def get_curr_env_data(self):
         # Env info that does not change within one episode
         config = self.env.get_current_config()
@@ -71,7 +71,7 @@ class ClothDataset(Dataset):
 
         # Cloth and picker information
         # Get partially observed particle index
-        rgbd = self.env.get_rgbd(show_picker=True)
+        rgbd = self.env.get_rgbd(show_picker=False)
         rgb, depth = rgbd[:, :, :3], rgbd[:, :, 3]
 
         world_coordinates = get_world_coords(rgb, depth, self.env, position)
@@ -106,7 +106,6 @@ class ClothDataset(Dataset):
             rollout_dir = os.path.join(self.data_dir, str(rollout_idx))
             os.system('mkdir -p ' + rollout_dir)
             self.env.reset()
-            self.env.action_tool.update_picker_boundary([-0.3, 0.05, -0.5], [0.5, 2, 0.5])
             prev_data = self.get_curr_env_data()  # Get new picker position
 
             if self.args.gen_gif:
@@ -117,13 +116,11 @@ class ClothDataset(Dataset):
             picker_position_list = []
             for j in range(1, self.args.time_step):
 
-                self.env.action_tool.update_picker_boundary([-0.3, 0.0, -0.5], [0.5, 2, 0.5])
+                self.env.action_tool.update_picker_boundary([-0.3, 0, -0.5], [1, 2, 0.5])
                 if not self._data_test(prev_data):
                     # raise error
                     raise Exception('_data_test failed: Number of point cloud too small')
 
-                # action = self._collect_policy(j, self.args.time_step)
-                # action = self._collect_policy_v3(j, self.args.time_step)
                 action = actions[j - 1]
 
                 self.env.step(action)
@@ -146,6 +143,7 @@ class ClothDataset(Dataset):
 
                 # plot the picker position in 3 axis
                 picker_position_list = np.array(picker_position_list)
+
                 fig, (ax0, ax1, ax2) = plt.subplots(nrows=1, ncols=3, sharex=True,
                                                     figsize=(12, 6))
                 ax0.plot(picker_position_list[:,0, 0])
@@ -267,18 +265,19 @@ class ClothDataset(Dataset):
 
         for step in range(1, self.args.time_step):
             if step ==1:
-                self.state = np.zeros(6)
+                self.state = np.zeros(6, dtype=np.float32)
+
             if step <= self.args.time_step/4:
-                acc_direction = np.array([5, -2, 0])
+                acc_direction = np.array([2., -0.3, 0], dtype=np.float32)
 
             elif step <= self.args.time_step/2:
-                acc_direction = np.array([-5, -2, 0])
+                acc_direction = np.array([-2., -0.3, 0], dtype=np.float32)
 
             elif step <= self.args.time_step*3/4:
-                acc_direction = np.array([-5, 2, 0])
+                acc_direction = np.array([-0.5, 0.3, 0], dtype=np.float32)
 
             else:
-                acc_direction = np.array([5, 2, 0])
+                acc_direction = np.array([0.5, 0.3, 0], dtype=np.float32)
 
             acc_direction[0] += acc_delta_value[step]
 
@@ -286,7 +285,7 @@ class ClothDataset(Dataset):
 
             self.state[0:3] += self.state[3:6] * self.args.dt
 
-            action = np.zeros_like(self.env.action_space.sample())
+            action = np.zeros_like(self.env.action_space.sample(), dtype=np.float32)
             action[:3],action[4:7] = self.state[0:3],self.state[0:3]
             action[7],action[3] = 1,1
 
@@ -416,6 +415,10 @@ class ClothDataset(Dataset):
                                     pick_dist = idx_dists[j, 1]
                             if pick_id is not None:  # update picked particles
                                 picked_particles[i] = int(pick_id)
+                        else:
+                            picked_particles[i] = int(-1)
+                            #rause error
+                            raise ValueError('No particle is picked')
 
                     # update the position and velocity of the picked particle
                     if picked_particles[i] != -1:
@@ -434,6 +437,7 @@ class ClothDataset(Dataset):
                 else:
                     picked_particles[i] = int(-1)
         picked_status = (picked_velocity, picked_pos, new_picker_pos)
+
         for i in range(len(picked_particles)): assert picked_particles[i] != -1, "should have 2 pickers"
 
         return picked_particles, picked_status
@@ -638,8 +642,12 @@ class ClothDataset(Dataset):
             vox_pc = voxelize_pointcloud(pointcloud, self.args.voxel_size)
             partial_particle_pos = data_cur['positions'][data_cur['downsample_idx']][data_cur['downsample_observable_idx']]
             if len(vox_pc) <= len(partial_particle_pos):
+                # Todo why this? fix it
                 break
             else:
+                break
+                self.skipped += 1
+                print('Skip idx_rollout: {}, idx_timestep: {}, vox_pc len:{}, partical pos:{}, skipped:{}'.format(idx_rollout, idx_timestep, len(vox_pc), len(partial_particle_pos),self.skipped))
                 idx += 1 if not eval else self.args.time_step - self.args.n_his
 
         # accumulate action if we need to predict multiple steps
@@ -651,6 +659,10 @@ class ClothDataset(Dataset):
         #     action[:3] += t_action[:3]
         for i in range(self.env.action_tool.num_picker):
             action[i*4:i*4+3] = data_nxt['picker_position'][i,:3] - data_cur['picker_position'][i,:3]
+
+        # if abs(action[:4] - action[4:]).sum() > 0:
+        #     print(action[:4] - action[4:])
+            # assert False
 
         # Use clean observable point cloud for bi-partite matching
         # particle_pc_mapped_idx: For each point in pc, give the index of the closest point on the visible downsample mesh

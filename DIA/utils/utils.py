@@ -80,8 +80,23 @@ def pc_reward_model(pos, cloth_particle_radius=0.00625, downsample_scale=3):
     res = np.sum(grid) * span[0] * span[1]
     return res
 
+def cloth_drop_reward_fuc(pc_pos, target_pos, cloth_size, observable_particle_index):
+    pc_pos = np.reshape(pc_pos, [-1, 3])
+    target_pos = np.reshape(target_pos, [-1, 3])
 
-################## IO #################################
+    cloth_xdim, cloth_ydim = cloth_size
+    downsample_idx, downsample_x_dim, downsample_y_dim = downsample(cloth_xdim, cloth_ydim, 3)
+    target_pos = target_pos[downsample_idx][observable_particle_index]
+
+    # compute the distance between each particle and the target
+    dist = np.linalg.norm(pc_pos - target_pos, axis=1)
+    res = np.average(dist)
+    res = -res
+
+    return res
+
+################## IO ##############
+# ###################
 def downsample(cloth_xdim, cloth_ydim, scale):
     cloth_xdim, cloth_ydim = int(cloth_xdim), int(cloth_ydim)
     new_idx = np.arange(cloth_xdim * cloth_ydim).reshape((cloth_ydim, cloth_xdim))
@@ -172,6 +187,17 @@ def draw_edge(frame, predicted_edges, matrix_world_to_camera, pointcloud, camera
 
     return image
 
+def draw_target_pos(frame, target_pos, matrix_world_to_camera, camera_height, camera_width, key_points_index):
+    u, v = project_to_image(matrix_world_to_camera, target_pos, camera_height, camera_width)
+
+    k1,k2,k3,k4 = key_points_index
+    #draw the quadrilateral of the target pos using four key points
+    image = cv2.line(frame, (int(u[k1]), int(v[k1])), (int(u[k2]), int(v[k2])), (0, 255, 0), 2)
+    image = cv2.line(image, (int(u[k1]), int(v[k1])), (int(u[k3]), int(v[k3])), (0, 255, 0), 2)
+    image = cv2.line(image, (int(u[k3]), int(v[k3])), (int(u[k4]), int(v[k4])), (0, 255, 0), 2)
+    image = cv2.line(image, (int(u[k4]), int(v[k4])), (int(u[k2]), int(v[k2])), (0, 255, 0), 2)
+
+    return image
 
 def cem_make_gif(all_frames, save_dir, save_name):
     # Convert to T x index x C x H x W for pytorch
@@ -200,27 +226,23 @@ def draw_policy_action(obs_before, obs_after, start_loc_1, end_loc_1, matrix_wor
     return res
 
 
-def draw_planned_actions(save_idx, obses, start_poses, end_poses, matrix_world_to_camera, log_dir):
+def draw_planned_actions(save_idx, obses, matrix_world_to_camera, target_pos, key_points_index,log_dir):
     height = width = obses[0].shape[0]
-
-    start_uv = []
-    end_uv = []
-    for sp in start_poses:
-        suv = project_to_image(matrix_world_to_camera, sp.reshape((1, 3)), height, width)
-        start_uv.append((suv[0][0], suv[1][0]))
-    for ep in end_poses:
-        euv = project_to_image(matrix_world_to_camera, ep.reshape((1, 3)), height, width)
-        end_uv.append((euv[0][0], euv[1][0]))
 
     res = []
     for idx in range(len(obses) - 1):
+
+        u, v = project_to_image(matrix_world_to_camera, target_pos, height, width)
+
         obs = obses[idx]
-        su, sv = start_uv[idx]
-        eu, ev = end_uv[idx]
-        if inrange(su, 0, width) and inrange(sv, 0, height) and inrange(eu, 0, width) and inrange(ev, 0, height):
-            cv2.arrowedLine(obs, (su, sv), (eu, ev), (255, 0, 0), 3)
-            obs[sv - 5:sv + 5, su - 5:su + 5, :] = (0, 0, 0)
-        res.append(obs)
+        k1, k2, k3, k4 = key_points_index
+        # draw the quadrilateral of the target pos using four key points
+        image = cv2.line(obs, (int(u[k1]), int(v[k1])), (int(u[k2]), int(v[k2])), (0, 255, 0), 2)
+        image = cv2.line(image, (int(u[k1]), int(v[k1])), (int(u[k3]), int(v[k3])), (0, 255, 0), 2)
+        image = cv2.line(image, (int(u[k3]), int(v[k3])), (int(u[k4]), int(v[k4])), (0, 255, 0), 2)
+        image = cv2.line(image, (int(u[k4]), int(v[k4])), (int(u[k2]), int(v[k2])), (0, 255, 0), 2)
+
+        res.append(image)
 
     res.append(obses[-1])
     res = np.concatenate(res, axis=1)
@@ -272,6 +294,10 @@ def set_shape_pos(pos):
 def visualize(env, particle_positions, shape_positions, config_id, sample_idx=None, picked_particles=None, show=False):
     """ Render point cloud trajectory without running the simulation dynamics"""
     env.reset(config_id=config_id)
+    # env.update_camera('obs_camera', {'pos': np.array([1.2,0.3, 0]),
+    #                                'angle': np.array([1.57, 0, 0]),
+    #                                'width': env.camera_width,
+    #                                'height': env.camera_height})
     frames = []
     for i in range(len(particle_positions)):
         particle_pos = particle_positions[i]

@@ -12,12 +12,12 @@ def get_default_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--exp_name', type=str, default='dia_edge', help='Name of the experiment')
     parser.add_argument('--log_dir', type=str, default='data/log_edge_test/', help='Logging directory')
-    parser.add_argument('--seed', type=int, default=100)
+    parser.add_argument('--seed', type=int, default=0)
 
     # Env
     parser.add_argument('--env_name', type=str, default='ClothDrop')
     parser.add_argument('--cached_states_path', type=str, default='dia.pkl')
-    parser.add_argument('--num_variations', type=int, default=100)
+    parser.add_argument('--num_variations', type=int, default=1000)
     parser.add_argument('--partial_observable', type=bool, default=True, help="Whether only the partial point cloud can be observed")
     parser.add_argument('--particle_radius', type=float, default=0.00625, help='Particle radius for the cloth')
 
@@ -32,7 +32,7 @@ def get_default_args():
     parser.add_argument('--gen_gif', type=int, default=0, help='Whether to also save gif of each trajectory (for debugging)')
     parser.add_argument('--collect_data_delta_move_min', type=float, default=0.0)
     parser.add_argument('--collect_data_delta_move_max', type=float, default=0.1) # 0.1 for acc control and 0.03 for vel control
-    parser.add_argument('--collect_data_delta_acc_min', type=float, default=0.0)
+    parser.add_argument('--collect_data_delta_acc_min', type=float, default=-0.5)
     parser.add_argument('--collect_data_delta_acc_max', type=float, default=1.0) # 0.1 for acc control and 0.03 for vel control
 
     # Model
@@ -56,7 +56,7 @@ def get_default_args():
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--cuda_idx', type=int, default=0)
-    parser.add_argument('--num_workers', type=int, default=15, help='Number of workers for dataloader')
+    parser.add_argument('--num_workers', type=int, default=8, help='Number of workers for dataloader')
     parser.add_argument('--use_wandb', type=bool, default=False, help='Use weight and bias for logging')
     parser.add_argument('--plot_num', type=int, default=8, help='Number of edge prediction visuals to dump per training epoch')
     parser.add_argument('--eval', type=int, default=0, help='Whether to just evaluating the model')
