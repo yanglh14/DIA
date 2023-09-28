@@ -54,6 +54,18 @@ class ClothDataset(Dataset):
                            'downsample_observable_idx',
                            'observable_idx',  # Indexes of the observed particles
                            'pointcloud']  # point cloud position by back-projecting the depth image
+        # determine whether shape_type in args
+        if hasattr(self.args, 'shape_type'):
+            if self.args.shape_type == 'platform':
+                self.data_names.append('box_size')
+                self.data_names.append('box_position')
+            if self.args.shape_type == 'sphere':
+                self.data_names.append('sphere_radius')
+                self.data_names.append('sphere_position')
+            if self.args.shape_type == 'rod':
+                self.data_names.append('rod_size')
+                self.data_names.append('rod_position')
+
         self.vcd_edge = None
         self.skipped = 0
     def get_curr_env_data(self):
@@ -71,7 +83,7 @@ class ClothDataset(Dataset):
 
         # Cloth and picker information
         # Get partially observed particle index
-        rgbd = self.env.get_rgbd(show_picker=False)
+        rgbd = self.env.get_rgbd(show_picker=True)
         rgb, depth = rgbd[:, :, :3], rgbd[:, :, 3]
 
         world_coordinates = get_world_coords(rgb, depth, self.env, position)
@@ -96,6 +108,21 @@ class ClothDataset(Dataset):
                'pointcloud': pointcloud.astype(np.float32)}
         if self.args.gen_gif:
             ret['rgb'], ret['depth'] = rgb, depth
+
+        if self.args.shape_type == 'platform':
+            current_config = self.env.get_current_config()
+            ret['box_size'] = current_config['box_size']
+            ret['box_position'] = current_config['box_position']
+
+        if self.args.shape_type == 'sphere':
+            current_config = self.env.get_current_config()
+            ret['sphere_radius'] = current_config['sphere_radius']
+            ret['sphere_position'] = current_config['sphere_position']
+
+        if self.args.shape_type == 'rod':
+            current_config = self.env.get_current_config()
+            ret['rod_size'] = current_config['rod_size']
+            ret['rod_position'] = current_config['rod_position']
         return ret
 
     def generate_dataset(self):
@@ -111,10 +138,25 @@ class ClothDataset(Dataset):
             if self.args.gen_gif:
                 frames_rgb, frames_depth = [prev_data['rgb']], [prev_data['depth']]
 
-            actions = self._collect_policy_v3() # Get actions for the whole episode, len=99
+            if self.args.shape_type == 'sphere':
+                actions = self._collect_policy_sphere()  # Get actions for sphere shape
+            elif self.args.shape_type == 'rod':
+                actions = self._collect_policy_rod()
+            elif self.args.shape_type == 'platform':
+                actions = self._collect_policy_platform_v3()
+            else:
+                actions = self._collect_policy_pick_drop()  # Get actions for the baseline and platform, len=99
+            actions = []
+            for i in range(1,300):
+                action = np.zeros_like(self.env.action_space.sample(), dtype=np.float32)
+                if i < 50:
+                    action[:] =[0,0.008,0.006,1,0,0.008,0.006,1]
+                else:
+                    action[:] =[0,0,0,1,0,0,0,1]
+                actions.append(action)
 
             picker_position_list = []
-            for j in range(1, self.args.time_step):
+            for j in range(1, 300):
 
                 self.env.action_tool.update_picker_boundary([-0.3, 0, -0.5], [1, 2, 0.5])
                 if not self._data_test(prev_data):
@@ -177,7 +219,15 @@ class ClothDataset(Dataset):
 
         vox_pc, velocity_his = data['pointcloud'], data['vel_his']
         picked_points, picked_status = self._find_and_update_picked_point(data, robot_exp=robot_exp)  # Return index of the picked point
-        node_attr = self._compute_node_attr(vox_pc, picked_points, velocity_his)
+        if hasattr(self.args, 'shape_type') and self.args.shape_type == 'platform':
+            node_attr = self._compute_node_attr(vox_pc, picked_points, velocity_his, box_size=data['box_size'], box_position=data['box_position'])
+        elif hasattr(self.args, 'shape_type') and self.args.shape_type == 'sphere':
+            node_attr = self._compute_node_attr(vox_pc, picked_points, velocity_his, sphere_radius=data['sphere_radius'], sphere_position=data['sphere_position'])
+        elif hasattr(self.args, 'shape_type') and self.args.shape_type == 'rod':
+            node_attr = self._compute_node_attr(vox_pc, picked_points, velocity_his, rod_size=data['rod_size'], rod_position=data['rod_position'])
+        else:
+            node_attr = self._compute_node_attr(vox_pc, picked_points, velocity_his)
+
         edges, edge_attr = self._compute_edge_attr(input_type, data)
 
         return {'node_attr': node_attr,
@@ -186,76 +236,264 @@ class ClothDataset(Dataset):
                 'picked_particles': picked_points,
                 'picked_status': picked_status}
 
+    def _collect_policy_rod(self):
+        """ Policy for collecting data for sphere shape, swing and drop"""
 
-    def _generate_policy_info(self):
-        """ not used anymore"""
-        # randomly select a move direction and a move distance
-        move_direction = np.random.rand(3) - 0.5
-        move_direction[1] = np.random.uniform(0, 0.5)
-        policy_info = dict()
-        policy_info['move_direction'] = move_direction / np.linalg.norm(move_direction)
-        policy_info['move_distance'] = np.random.uniform(
-            self.args.collect_data_delta_move_min,
-            self.args.collect_data_delta_move_max)
-        policy_info['move_steps'] = 60
-        policy_info['delta_move'] = policy_info['move_distance'] / policy_info['move_steps']
-        return policy_info
+        acc_delta_value = np.random.uniform(
+            self.args.collect_data_delta_acc_min,
+            self.args.collect_data_delta_acc_max, size=self.args.time_step)
 
-    def _collect_policy(self, step, max_step):
-        """ Policy for collecting data - velocity control"""
-        # randomly select a move direction and a move distance
-        if step <= max_step/2:
-            move_direction = np.array([np.random.rand(1)[0]*5, -np.random.rand(1)[0], 0])
+        action_list = []
 
-            move_direction = np.array([np.random.rand(1)[0]*0.2, -5*np.random.rand(1)[0], 0])
+        for step in range(1, self.args.time_step):
+            if step ==1:
+                self.state = np.zeros(6, dtype=np.float32)
 
-        else:
-            move_direction = np.array([-np.random.rand(1)[0]*5, -np.random.rand(1)[0], 0])
-            move_direction = np.array([-np.random.rand(1)[0]*0.2, -5*np.random.rand(1)[0], 0])
+            if step <= self.args.time_step*0.8/4:
+                acc_direction = np.array([6, -1.6, 0], dtype=np.float32)
 
-        move_direction = move_direction / np.linalg.norm(move_direction)
-        move_distance = np.random.uniform(
-            self.args.collect_data_delta_move_min,
-            self.args.collect_data_delta_move_max)
+            elif step <= self.args.time_step*0.8/2:
+                acc_direction = np.array([-6, -1.6, 0], dtype=np.float32)
 
-        action = np.zeros_like(self.env.action_space.sample())
+            elif step <= self.args.time_step*0.8*3/4:
+                acc_direction = np.array([-3, 1.6, 0], dtype=np.float32)
 
-        action[:3] = move_distance * move_direction
+            elif step <= self.args.time_step*0.8:
+                acc_direction = np.array([3, 1.6, 0], dtype=np.float32)
+            else:
+                acc_direction = np.array([0, 0, 0], dtype=np.float32)
 
-        action[4:7] = move_distance * move_direction
-        action[7],action[3] = 1,1
+            acc_direction[0] += acc_delta_value[step]
 
-        return action
+            self.state[3:6] = acc_direction * self.args.dt
 
-    def _collect_policy_v2(self, step, max_step):
-        """ Policy for collecting data - acceleration control"""
-        if step ==1:
-            self.state = np.zeros(6)
-        if step <= max_step/4:
-            acc_direction = np.array([np.random.rand(1)[0]*5, -np.random.rand(1)[0], 0])
-        elif step <= max_step/2:
-            acc_direction = np.array([-np.random.rand(1)[0]*5, -np.random.rand(1)[0], 0])
-        elif step <= max_step*3/4:
-            acc_direction = np.array([-np.random.rand(1)[0]*5, np.random.rand(1)[0], 0])
-        else:
-            acc_direction = np.array([np.random.rand(1)[0]*5, np.random.rand(1)[0], 0])
+            self.state[0:3] += self.state[3:6] * self.args.dt
 
-        acc_direction = acc_direction / np.linalg.norm(acc_direction)
-        acc_value = np.random.uniform(
-            self.args.collect_data_delta_move_min,
-            self.args.collect_data_delta_move_max)
+            action = np.zeros_like(self.env.action_space.sample(), dtype=np.float32)
+            action[:3],action[4:7] = self.state[0:3],self.state[0:3]
 
-        self.state[3:6] = acc_value * acc_direction
+            if not step> self.args.time_step*0.8:
+                action[7],action[3] = 1,1
+            else:
+                action[7],action[3] = 0,0
 
-        self.state[0:3] += self.state[3:6] * self.args.dt
+            action_list.append(action)
 
-        action = np.zeros_like(self.env.action_space.sample())
-        action[:3],action[4:7] = self.state[0:3],self.state[0:3]
-        action[7],action[3] = 1,1
+        return action_list
 
-        return action
+    def _collect_policy_sphere(self):
+        """ Policy for collecting data for sphere shape, swing and drop"""
 
+        acc_delta_value = np.random.uniform(
+            self.args.collect_data_delta_acc_min,
+            self.args.collect_data_delta_acc_max, size=self.args.time_step)
+
+        action_list = []
+
+        for step in range(1, self.args.time_step):
+            if step ==1:
+                self.state = np.zeros(6, dtype=np.float32)
+
+            if step <= self.args.time_step*0.8/4:
+                acc_direction = np.array([6, -1.6, 0], dtype=np.float32)
+
+            elif step <= self.args.time_step*0.8/2:
+                acc_direction = np.array([-6, -1.6, 0], dtype=np.float32)
+
+            elif step <= self.args.time_step*0.8*3/4:
+                acc_direction = np.array([-3, 1.6, 0], dtype=np.float32)
+
+            elif step <= self.args.time_step*0.8:
+                acc_direction = np.array([3, 1.6, 0], dtype=np.float32)
+            else:
+                acc_direction = np.array([0, 0, 0], dtype=np.float32)
+
+            acc_direction[0] += acc_delta_value[step]
+
+            self.state[3:6] = acc_direction * self.args.dt
+
+            self.state[0:3] += self.state[3:6] * self.args.dt
+
+            action = np.zeros_like(self.env.action_space.sample(), dtype=np.float32)
+            action[:3],action[4:7] = self.state[0:3],self.state[0:3]
+
+            if not step> self.args.time_step*0.8:
+                action[7],action[3] = 1,1
+            else:
+                action[:7] = 0
+
+            action_list.append(action)
+
+        return action_list
+    def _collect_policy_platform_v3(self):
+        """ Policy for collecting data - dia_platform3: not release, keep low vel in the last steps, env to large platform """
+
+        acc_delta_value = np.random.uniform(
+            self.args.collect_data_delta_acc_min,
+            self.args.collect_data_delta_acc_max, size=self.args.time_step)
+        bias = np.sum(acc_delta_value[1:int(self.args.time_step/2)])/ (self.args.time_step-1 - int(self.args.time_step/2))
+
+        action_list = []
+
+        for step in range(1, self.args.time_step):
+            if step ==1:
+                self.state = np.zeros(6, dtype=np.float32)
+
+            if step <= self.args.time_step/4:
+                acc_direction = np.array([6, -1.6, 0], dtype=np.float32)
+
+            elif step <= self.args.time_step/2:
+                acc_direction = np.array([-6, -1.6, 0], dtype=np.float32)
+
+            elif step <= self.args.time_step*3/4:
+                acc_direction = np.array([-3-bias, 1.6, 0], dtype=np.float32)
+
+            else:
+                acc_direction = np.array([3-bias, 1.6, 0], dtype=np.float32)
+
+            if step<= self.args.time_step/2:
+                acc_direction[0] += acc_delta_value[step]
+
+            self.state[3:6] = acc_direction * self.args.dt
+
+            self.state[0:3] += self.state[3:6] * self.args.dt
+
+            action = np.zeros_like(self.env.action_space.sample(), dtype=np.float32)
+            action[:3],action[4:7] = self.state[0:3],self.state[0:3]
+            action[7],action[3] = 1,1
+
+            # if not step> self.args.time_step*3/4:
+            #     action[7],action[3] = 1,1
+            # else:
+            #     action[7],action[3] = 0,0
+
+            action_list.append(action)
+
+        return action_list
+
+    def _collect_policy_platform(self):
+        """ Policy for collecting data - acceleration control and ref trajectory - platform shape"""
+        acc_delta_value = np.random.uniform(
+            self.args.collect_data_delta_acc_min,
+            self.args.collect_data_delta_acc_max, size=self.args.time_step)
+
+        action_list = []
+
+        for step in range(1, self.args.time_step):
+            if step ==1:
+                self.state = np.zeros(6, dtype=np.float32)
+
+            if step <= self.args.time_step/4:
+                acc_direction = np.array([6, -1.6, 0], dtype=np.float32)
+
+            elif step <= self.args.time_step/2:
+                acc_direction = np.array([-6, -1.6, 0], dtype=np.float32)
+
+            elif step <= self.args.time_step*3/4:
+                acc_direction = np.array([-3, 1.6, 0], dtype=np.float32)
+
+            else:
+                acc_direction = np.array([3, 1.6, 0], dtype=np.float32)
+
+            acc_direction[0] += acc_delta_value[step]
+
+            self.state[3:6] = acc_direction * self.args.dt
+
+            self.state[0:3] += self.state[3:6] * self.args.dt
+
+            action = np.zeros_like(self.env.action_space.sample(), dtype=np.float32)
+            action[:3],action[4:7] = self.state[0:3],self.state[0:3]
+
+            if not step> self.args.time_step*3/4:
+                action[7],action[3] = 1,1
+            else:
+                action[7],action[3] = 0,0
+
+            action_list.append(action)
+
+        return action_list
+
+    def _collect_policy_pick_drop(self):
+        """ Policy for collecting data - acceleration control and ref trajectory - no shape - pick and drop """
+        acc_delta_value = np.random.uniform(
+            self.args.collect_data_delta_acc_min,
+            self.args.collect_data_delta_acc_max, size=self.args.time_step)
+
+        action_list = []
+
+        for step in range(1, self.args.time_step):
+            if step ==1:
+                self.state = np.zeros(6, dtype=np.float32)
+
+            if step <= self.args.time_step/4:
+                acc_direction = np.array([6, -1.6, 0], dtype=np.float32)
+
+            elif step <= self.args.time_step/2:
+                acc_direction = np.array([-6, -1.6, 0], dtype=np.float32)
+
+            elif step <= self.args.time_step*3/4:
+                acc_direction = np.array([-3, 1.6, 0], dtype=np.float32)
+
+            else:
+                acc_direction = np.array([3, 1.6, 0], dtype=np.float32)
+
+            acc_direction[0] += acc_delta_value[step]
+
+            self.state[3:6] = acc_direction * self.args.dt
+
+            self.state[0:3] += self.state[3:6] * self.args.dt
+
+            action = np.zeros_like(self.env.action_space.sample(), dtype=np.float32)
+            action[:3],action[4:7] = self.state[0:3],self.state[0:3]
+
+            if not step> self.args.time_step*3/4:
+                action[7],action[3] = 1,1
+            else:
+                action[7],action[3] = 0,0
+
+            action_list.append(action)
+
+        return action_list
+    
     def _collect_policy_v3(self):
+        """ Policy for collecting data - acceleration control and ref trajectory - Version3 and platform shape"""
+        acc_delta_value = np.random.uniform(
+            self.args.collect_data_delta_acc_min,
+            self.args.collect_data_delta_acc_max, size=self.args.time_step)
+
+        action_list = []
+
+        for step in range(1, self.args.time_step):
+            if step ==1:
+                self.state = np.zeros(6, dtype=np.float32)
+
+            if step <= self.args.time_step/4:
+                acc_direction = np.array([6, -1.6, 0], dtype=np.float32)
+
+            elif step <= self.args.time_step/2:
+                acc_direction = np.array([-6, -1.6, 0], dtype=np.float32)
+
+            elif step <= self.args.time_step*3/4:
+                acc_direction = np.array([-3, 1.6, 0], dtype=np.float32)
+
+            else:
+                acc_direction = np.array([3, 1.6, 0], dtype=np.float32)
+
+            acc_direction[0] += acc_delta_value[step]
+
+            self.state[3:6] = acc_direction * self.args.dt
+
+            self.state[0:3] += self.state[3:6] * self.args.dt
+
+            action = np.zeros_like(self.env.action_space.sample(), dtype=np.float32)
+            action[:3],action[4:7] = self.state[0:3],self.state[0:3]
+            action[7],action[3] = 1,1
+
+            action_list.append(action)
+
+        return action_list
+
+    def _collect_policy_v2(self):
         """ Policy for collecting data - acceleration control and ref trajectory"""
         acc_delta_value = np.random.uniform(
             self.args.collect_data_delta_acc_min,
@@ -415,6 +653,7 @@ class ClothDataset(Dataset):
                                     pick_dist = idx_dists[j, 1]
                             if pick_id is not None:  # update picked particles
                                 picked_particles[i] = int(pick_id)
+
                         else:
                             picked_particles[i] = int(-1)
                             #rause error
@@ -426,9 +665,9 @@ class ClothDataset(Dataset):
                         new_pos = vox_pc[picked_particles[i]] + new_picker_pos[i, :] - picker_pos[i, :]
                         new_vel = (new_pos - old_pos) / (self.dt * self.args.pred_time_interval)
 
-                        tmp_vel_history = velocity_his[picked_particles[i]][:-3].copy()
-                        velocity_his[picked_particles[i], 3:] = tmp_vel_history
-                        velocity_his[picked_particles[i], :3] = new_vel
+                        tmp_vel_history = velocity_his[picked_particles[i]][3:].copy()
+                        velocity_his[picked_particles[i], :-3] = tmp_vel_history
+                        velocity_his[picked_particles[i], -3:] = new_vel
 
                         vox_pc[picked_particles[i]] = new_pos
 
@@ -438,11 +677,11 @@ class ClothDataset(Dataset):
                     picked_particles[i] = int(-1)
         picked_status = (picked_velocity, picked_pos, new_picker_pos)
 
-        for i in range(len(picked_particles)): assert picked_particles[i] != -1, "should have 2 pickers"
+        # for i in range(len(picked_particles)): assert picked_particles[i] != -1, "should have 2 pickers"
 
         return picked_particles, picked_status
 
-    def _compute_node_attr(self, vox_pc, picked_points, velocity_his):
+    def _compute_node_attr(self, vox_pc, picked_points, velocity_his, **kwargs):
         # picked particle [0, 1]
         # normal particle [1, 0]
         node_one_hot = np.zeros((len(vox_pc), 2), dtype=np.float32)
@@ -452,6 +691,39 @@ class ClothDataset(Dataset):
                 node_one_hot[picked, 0] = 0
                 node_one_hot[picked, 1] = 1
         distance_to_ground = torch.from_numpy(vox_pc[:, 1]).view((-1, 1))
+
+        # distance to platform
+        if hasattr(self.args, 'shape_type'):
+            if self.args.shape_type == 'platform':
+                box_position = kwargs['box_position']
+                box_size = kwargs['box_size']
+                vox_pc_center = vox_pc - box_position
+                vector_tobox = abs(vox_pc_center) - box_size
+                vector_tobox[vector_tobox < 0] = 0
+                # vector_tobox to dtype float32
+                distance_to_box = np.linalg.norm(vector_tobox.astype(np.float32), axis=1, keepdims=True)
+
+                #select the min distance between ground and platform
+                distance_to_ground = torch.from_numpy(np.minimum(vox_pc[:, 1:2], distance_to_box))
+
+            if self.args.shape_type == 'sphere':
+                sphere_position = kwargs['sphere_position']
+                sphere_radius = kwargs['sphere_radius']
+                distance_to_sphere = np.linalg.norm((vox_pc - sphere_position).astype(np.float32), axis=1, keepdims=True)-sphere_radius
+
+                distance_to_ground = torch.from_numpy(np.minimum(vox_pc[:, 1:2], distance_to_sphere))
+
+            if self.args.shape_type == 'rod':
+                rod_position = kwargs['rod_position']
+                rod_size = kwargs['rod_size']
+                vox_pc_center = vox_pc - rod_position
+                vector_torod = abs(vox_pc_center) - rod_size
+                vector_torod[vector_torod < 0] = 0
+                # vector_tobox to dtype float32
+                distance_to_rod = np.linalg.norm(vector_torod.astype(np.float32), axis=1, keepdims=True)
+
+                distance_to_ground = torch.from_numpy(np.minimum(vox_pc[:, 1:2], distance_to_rod))
+
         node_one_hot = torch.from_numpy(node_one_hot)
         node_attr = torch.from_numpy(velocity_his)
         node_attr = torch.cat([node_attr, distance_to_ground, node_one_hot], dim=1)
@@ -634,6 +906,16 @@ class ClothDataset(Dataset):
             idx_rollout = (idx // (self.args.time_step - self.args.n_his)) % self.n_rollout
             idx_timestep = max((self.args.n_his - pred_time_interval) + idx % (self.args.time_step - self.args.n_his), 0)
 
+            if self.args.shape_type == 'platform' and idx_timestep < self.args.time_step*0.75 and idx_timestep >= self.args.time_step*0.75 - 5:
+                idx += 1
+                continue
+            if self.args.shape_type == 'sphere' and idx_timestep < self.args.time_step*0.8 and idx_timestep >= self.args.time_step*0.8 - 5:
+                idx += 1
+                continue
+
+            if self.args.shape_type == 'rod' and idx_timestep < self.args.time_step*0.8 and idx_timestep >= self.args.time_step*0.8 - 5:
+                idx += 1
+                continue
             data_cur = load_data(self.data_dir, idx_rollout, idx_timestep, self.data_names)
             data_nxt = load_data(self.data_dir, idx_rollout, idx_timestep + pred_time_interval, self.data_names)
 
@@ -660,15 +942,12 @@ class ClothDataset(Dataset):
         for i in range(self.env.action_tool.num_picker):
             action[i*4:i*4+3] = data_nxt['picker_position'][i,:3] - data_cur['picker_position'][i,:3]
 
-        # if abs(action[:4] - action[4:]).sum() > 0:
-        #     print(action[:4] - action[4:])
-            # assert False
-
         # Use clean observable point cloud for bi-partite matching
         # particle_pc_mapped_idx: For each point in pc, give the index of the closest point on the visible downsample mesh
         _, partial_pc_mapped_idx = get_observable_particle_index_3(vox_pc, partial_particle_pos, threshold=self.args.voxel_size)
         partial_pc_mapped_idx = data_cur['downsample_observable_idx'][
             partial_pc_mapped_idx]  # Map index from the observable downsampled mesh to the downsampled mesh
+
         # TODO Later try this new way
         # _, partial_pc_mapped_idx = get_mapping_from_pointcloud_to_partile_nearest_neighbor(vox_pc, partial_particle_pos,
         #                                                                                    threshold=self.args.voxel_size)
@@ -698,6 +977,7 @@ class ClothDataset(Dataset):
         full_gt_accel = torch.FloatTensor((full_vel_list[-1] - full_vel_list[-2]) / (self.args.dt * pred_time_interval))
         partial_gt_accel = full_gt_accel[downsample_idx][partial_pc_mapped_idx]
 
+        # Todo: reward model need uptaed
         gt_reward_crt = torch.FloatTensor([pc_reward_model(full_pos_cur[downsample_idx])])
         gt_reward_nxt = torch.FloatTensor([pc_reward_model(full_pos_nxt[downsample_idx])])
 
@@ -716,7 +996,17 @@ class ClothDataset(Dataset):
                 'action': action,
                 'scene_params': data_cur['scene_params'],
                 'partial_pc_mapped_idx': partial_pc_mapped_idx}
+        if self.args.shape_type == "platform":
+            data['box_size'] = data_cur['box_size']
+            data['box_position'] = data_cur['box_position']
 
+        if self.args.shape_type == "sphere":
+            data['sphere_radius'] = data_cur['sphere_radius']
+            data['sphere_position'] = data_cur['sphere_position']
+
+        if self.args.shape_type == "rod":
+            data['rod_size'] = data_cur['rod_size']
+            data['rod_position'] = data_cur['rod_position']
         # TODO @Yufei, clean this part also
         if self.vcd_edge is not None:
             # TODO: support rest dist for full(well, maybe not necessary)

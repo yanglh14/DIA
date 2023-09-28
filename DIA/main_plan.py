@@ -12,6 +12,7 @@ from DIA.utils.utils import (
     downsample, transform_info, draw_planned_actions, visualize, draw_edge,
     pc_reward_model, voxelize_pointcloud, vv_to_args, set_picker_pos, cem_make_gif, configure_seed, configure_logger,draw_target_pos
 )
+from utils.utils_plan import *
 from DIA.utils.camera_utils import get_matrix_world_to_camera, get_world_coords, get_observable_particle_index_3
 from softgym.utils.visualization import save_numpy_as_gif
 
@@ -37,6 +38,8 @@ def get_default_args():
     parser.add_argument('--n_his', type=int, default=5)
     parser.add_argument('--dt', type=float, default=1. / 100.)
 
+    parser.add_argument('--shape_type', type=str, default='None', help="Any other shape except picker: [platform, sphere, rod]")
+
     # Load model
     parser.add_argument('--edge_model_path', type=str, default=None,
                         help='Path to a trained edgeGNN model')
@@ -45,20 +48,13 @@ def get_default_args():
     parser.add_argument('--load_optim', type=bool, default=False, help='Load optimizer when resume training')
 
     # Planning
-    parser.add_argument('--shooting_number', type=int, default=10, help='Number of sampled pick-and-place action for random shooting')
-    parser.add_argument('--delta_y', type=float, default=0.07, help='Fixed picking height for real-world experiment')
-    parser.add_argument('--delta_y_range', type=list, default=[0, 0.5], help='Sample range for the pick-and-place height in simulation')
-    parser.add_argument('--move_distance_range', type=list, default=[0.05, 0.2], help='Sample range for the pick-and-place distance')
-    parser.add_argument('--pull_step', type=int, default=10, help='Number of steps for doing pick-and-place on the cloth')
-    parser.add_argument('--wait_step', type=int, default=6, help='Number of steps for waiting the cloth to stablize after the pick-and-place')
+    parser.add_argument('--shooting_number', type=int, default=50, help='Number of sampled pick-and-place action for random shooting')
     parser.add_argument('--num_worker', type=int, default=0, help='Number of processes to generate the sampled pick-and-place actions in parallel')
-    parser.add_argument('--task', type=str, default='drop', help="drop")
     parser.add_argument('--pred_time_interval', type=int, default=5, help='Interval of timesteps between each dynamics prediction (model dt)')
     parser.add_argument('--configurations', type=list, default=[i for i in range(20)], help='List of configurations to run')
-    parser.add_argument('--pick_and_place_num', type=int, default=10, help='Number of pick-and-place for one smoothing trajectory')
     parser.add_argument('--control_sequence_num', type=int, default=20, help='Number of pick-and-place for one smoothing trajectory')
     parser.add_argument('--delta_acc_min', type=float, default=-0.5)
-    parser.add_argument('--delta_acc_max', type=float, default=1.0) # 0.1 for acc control and 0.03 for vel control
+    parser.add_argument('--delta_acc_max', type=float, default=0.5) # 0.1 for acc control and 0.03 for vel control
 
     # Other
     parser.add_argument('--cuda_idx', type=int, default=0)
@@ -117,7 +113,7 @@ def create_env(args):
     env_args['num_variations'] = args.num_variations
     if args.env_name == 'TshirtFlatten':
         env_args['cloth_type'] = args.cloth_type
-
+    env_args['shape_type'] = args.shape_type
     env = SOFTGYM_ENVS[args.env_name](**env_args)
     render_env_kwargs = copy.deepcopy(env_args)
     render_env_kwargs['render_mode'] = 'particle'
@@ -126,13 +122,14 @@ def create_env(args):
     return env, render_env
 
 
-def load_edge_model(edge_model_path, env):
+def load_edge_model(edge_model_path, env, args):
     if edge_model_path is not None:
         edge_model_dir = osp.dirname(edge_model_path)
         edge_model_vv = json.load(open(osp.join(edge_model_dir, 'best_state.json')))
         edge_model_vv['eval'] = 1
         edge_model_vv['n_epoch'] = 1
         edge_model_vv['edge_model_path'] = edge_model_path
+        edge_model_vv['shape_type'] = args.shape_type
         edge_model_args = vv_to_args(edge_model_vv)
 
         vcd_edge = Edge(edge_model_args, env=env)
@@ -159,6 +156,7 @@ def load_dynamics_model(args, env, vcd_edge):
     model_vv['pred_time_interval'] = args.pred_time_interval
     model_vv['cuda_idx'] = args.cuda_idx
     model_vv['partial_dyn_path'] = args.partial_dyn_path
+    model_vv['shape_type'] = args.shape_type
     args = vv_to_args(model_vv)
 
     vcdynamics = DynamicIA(args, vcd_edge=vcd_edge, env=env)
@@ -166,7 +164,7 @@ def load_dynamics_model(args, env, vcd_edge):
 
 
 def get_rgbd_and_mask(env, sensor_noise):
-    rgbd = env.get_rgbd(show_picker=False)
+    rgbd = env.get_rgbd(show_picker=True)
     rgb = rgbd[:, :, :3]
     depth = rgbd[:, :, 3]
     if sensor_noise > 0:
@@ -195,7 +193,7 @@ def main(args):
     env, render_env = create_env(args)
 
     # load vcdynamics
-    vcd_edge = load_edge_model(args.edge_model_path, env)
+    vcd_edge = load_edge_model(args.edge_model_path, env, args)
     vcdynamics = load_dynamics_model(args, env, vcd_edge)
 
     # compute camera matrix
@@ -204,20 +202,18 @@ def main(args):
 
     # build random shooting planner
     planner = RandomShootingUVPickandPlacePlanner(
-        args.shooting_number, args.delta_y, args.pull_step, args.wait_step,
+        args.shooting_number,
         dynamics=vcdynamics,
         reward_model=pc_reward_model,
         num_worker=args.num_worker,
-        move_distance_range=args.move_distance_range,
         gpu_num=args.gpu_num,
-        delta_y_range=args.delta_y_range,
         image_size=(env.camera_height, env.camera_width),
         matrix_world_to_camera=matrix_world_to_camera,
-        task=args.task,
         dt = args.dt,
         env= env,
         args = args,
         delta_acc_range = [args.delta_acc_min, args.delta_acc_max],
+        control_sequence_num = args.control_sequence_num,
     )
     # for episode_idx in args.configurations:
     #     # setup environment, ensure the same initial configuration
@@ -275,11 +271,25 @@ def main(args):
             voxel_pc = voxelize_pointcloud(pointcloud, args.voxel_size)
             observable_particle_indices = np.zeros(len(voxel_pc), dtype=np.int32)
             _, observable_particle_indices = get_observable_particle_index_3(voxel_pc, env.get_state()['particle_pos'].reshape(-1,4)[downsample_idx,:3])
+
             vel_history = np.zeros((len(observable_particle_indices), args.n_his * 3), dtype=np.float32)
 
-            current_vel = (voxel_pc - (gt_positions[-1][0][observable_particle_indices] if len(gt_positions) > 0 else voxel_pc))/(args.dt* args.pred_time_interval)
-            vel_history[:, :-3] = vel_history[:, 3:]
-            vel_history[:, -3:] = current_vel
+            # update velocity history
+            if len(gt_positions)>1:
+                for i in range(min(len(gt_positions)-1,args.n_his-1)):
+                    start_index = (min(control_sequence_idx, args.n_his)) * (-3) + i * 3
+                    vel_history[:, start_index:start_index+3] = (gt_positions[i+1][0][observable_particle_indices] - gt_positions[i][0][observable_particle_indices]) / (args.dt * args.pred_time_interval)
+
+                vel_history[:, -3:] = (voxel_pc -gt_positions[-1][0][observable_particle_indices]) / (args.dt * args.pred_time_interval*0.8)
+
+            elif len(gt_positions) == 1:
+                vel_history[:, -3:] = (voxel_pc -gt_positions[-1][0][observable_particle_indices]) / (args.dt * args.pred_time_interval*0.8)
+            else:
+                pass # vel_history is already zeros
+
+            # current_vel = (voxel_pc - (gt_positions[-1][0][observable_particle_indices] if len(gt_positions) > 0 else voxel_pc))/(args.dt* args.pred_time_interval)
+            # vel_history[:, :-3] = vel_history[:, 3:]
+            # vel_history[:, -3:] = current_vel
 
             picker_position, picked_points = env.action_tool._get_pos()[0], [-1, -1]
             data = {
@@ -291,10 +301,23 @@ def main(args):
                 'scene_params': scene_params,
                 'partial_pc_mapped_idx': observable_particle_indices,
             }
+            if args.shape_type == 'platform':
+                data['box_size'] = config['box_size']
+                data['box_position'] = config['box_position']
+            if args.shape_type == "sphere":
+                data['sphere_radius'] = config['sphere_radius']
+                data['sphere_position'] = config['sphere_position']
+            if args.shape_type == "rod":
+                data['rod_size'] = config['rod_size']
+                data['rod_position'] = config['rod_position']
 
             # do planning
-            action_sequence, model_pred_particle_pos, model_pred_shape_pos, cem_info, predicted_edges, results \
-                = planner.get_action(data, control_sequence_idx=control_sequence_idx, control_sequence_num=args.control_sequence_num)
+            if control_sequence_idx <20:
+                action_sequence, model_pred_particle_pos, model_pred_shape_pos, cem_info, predicted_edges, results \
+                    = planner.get_action(data, control_sequence_idx=control_sequence_idx)
+            else:
+                action_sequence, model_pred_particle_pos, model_pred_shape_pos, cem_info, predicted_edges, results = action_sequence[1:], model_pred_particle_pos[1:], model_pred_shape_pos[1:], cem_info, predicted_edges, results
+
             print("config {} control sequence idx {}".format(config_id, control_sequence_idx), flush=True)
 
             if control_sequence_idx == 0:
@@ -311,13 +334,15 @@ def main(args):
             if args.pred_time_interval >= 2:
                 action_sequence_small = np.zeros((args.pred_time_interval, 8))
                 action_sequence_small[:, :] = (action_sequence[0,:]) / args.pred_time_interval
-                action_sequence_small[:, 3],action_sequence_small[:, 7] = 1,1
-                action_sequence = action_sequence_small
+
+                action_sequence_small[action_sequence_small[:, 3]>0, 3] =1
+                action_sequence_small[action_sequence_small[:, 7]>0, 7] =1
+                action_sequence_executed = action_sequence_small
 
             # execute the planned action, i.e., move the picked particle to the place location
-            gt_positions.append(np.zeros((len(action_sequence), len(downsample_idx), 3)))
-            gt_shape_positions.append(np.zeros((len(action_sequence), 2, 3)))
-            for t_idx, ac in enumerate(action_sequence):
+            gt_positions.append(np.zeros((len(action_sequence_executed), len(downsample_idx), 3)))
+            gt_shape_positions.append(np.zeros((len(action_sequence_executed), 2, 3)))
+            for t_idx, ac in enumerate(action_sequence_executed):
                 _, reward, done, info = env.step(ac, record_continuous_video=True, img_size=360)
 
                 imgs = info['flex_env_recorded_frames']
@@ -344,6 +369,10 @@ def main(args):
             # if info['normalized_performance'] > 0.95:
             #     break
 
+        #####################
+        # SAVE EVERYTHING
+        #####################
+
         log_dir_episode = osp.join(log_dir, str(episode_idx))
         os.makedirs(log_dir_episode, exist_ok=True)
 
@@ -356,7 +385,7 @@ def main(args):
         _imgs = [_img, _img]
         for i in range(len(_imgs)):
             _imgs[i] = draw_target_pos(_imgs[i], env.get_current_config()['target_pos'], matrix_world_to_camera[:3, :],
-                                     env.camera_height, env.camera_width,env._get_key_point_idx())
+                                     env.camera_height, env.camera_width, env._get_key_point_idx())
         cem_make_gif([_imgs], log_dir_episode, args.env_name + '{}_target.gif'.format(episode_idx))
 
         # draw the planning actions & dump the data for drawing the planning actions
@@ -365,7 +394,7 @@ def main(args):
         with open(osp.join(log_dir_episode, '{}_draw_planned_traj.pkl'.format(episode_idx)), 'wb') as f:
             pickle.dump(draw_data, f)
 
-        save_gif_details = False
+        save_gif_details = True
         if save_gif_details:
             # make gif visuals of the model predictions and groundtruth rollouts
             for control_sequence_idx in range(0, actual_control_num):
@@ -396,22 +425,22 @@ def main(args):
 
                     save_numpy_as_gif(_frames, osp.join(log_dir_episode,'{}-{}-{}.gif'.format(episode_idx,control_sequence_idx, name)))
 
-                # if control_sequence_idx==0:
-                #     model_pred_particle_poses_all = []
-                #     for i in range(args.shooting_number):
-                #
-                #         frames_model_sample_action = visualize(render_env, result_step_0[i]['model_positions'],
-                #                                  model_pred_shape_poses[control_sequence_idx],
-                #                                  config_id, range(model_pred_particle_poses[control_sequence_idx].shape[1]))
-                #
-                #         _frames = np.array(frames_model_sample_action)
-                #         for t in range(len(_frames)):
-                #             _frames[t] = draw_target_pos(_frames[t], env.get_current_config()['target_pos'], matrix_world_to_camera[:3, :],
-                #                                  env.camera_height, env.camera_width, env._get_key_point_idx())
-                #
-                #         log_dir_episode_sample_action = osp.join(log_dir_episode, 'sample_action')
-                #         os.makedirs(log_dir_episode_sample_action, exist_ok=True)
-                #         save_numpy_as_gif(_frames, osp.join(log_dir_episode_sample_action,'{}-{}-ActionSampling{}.gif'.format(episode_idx,control_sequence_idx , i)))
+                if control_sequence_idx==0:
+                    model_pred_particle_poses_all = []
+                    for i in range(args.shooting_number):
+
+                        frames_model_sample_action = visualize(render_env, result_step_0[i]['model_positions'],
+                                                 model_pred_shape_poses[control_sequence_idx],
+                                                 config_id, range(model_pred_particle_poses[control_sequence_idx].shape[1]))
+
+                        _frames = np.array(frames_model_sample_action)
+                        for t in range(len(_frames)):
+                            _frames[t] = draw_target_pos(_frames[t], env.get_current_config()['target_pos'], matrix_world_to_camera[:3, :],
+                                                 env.camera_height, env.camera_width, env._get_key_point_idx())
+
+                        log_dir_episode_sample_action = osp.join(log_dir_episode, 'sample_action')
+                        os.makedirs(log_dir_episode_sample_action, exist_ok=True)
+                        save_numpy_as_gif(_frames, osp.join(log_dir_episode_sample_action,'{}-{}-ActionSampling{}.gif'.format(episode_idx,control_sequence_idx , i)))
 
         _gt_positions = np.array(gt_positions).reshape(-1, len(downsample_idx), 3)
         _gt_shape_positions = np.array(gt_shape_positions).reshape(-1, 2, 3)

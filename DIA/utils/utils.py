@@ -286,8 +286,8 @@ def draw_cem_elites(obs_, start_poses, end_poses, mean_start_pos, mean_end_pos,
 
 def set_shape_pos(pos):
     shape_states = np.array(pyflex.get_shape_states()).reshape(-1, 14)
-    shape_states[:, 3:6] = pos.reshape(-1, 3)
-    shape_states[:, :3] = pos.reshape(-1, 3)
+    shape_states[:2, 3:6] = pos.reshape(-1, 3)
+    shape_states[:2, :3] = pos.reshape(-1, 3)
     pyflex.set_shape_states(shape_states)
 
 

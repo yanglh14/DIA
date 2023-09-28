@@ -380,6 +380,18 @@ class DynamicIA(object):
                     'mesh_edges': mesh_edges,
                     'rest_dist': rest_dist,
                     'initial_particle_pos': initial_pc_pos}
+            if hasattr(self.args, 'shape_type'):
+                if self.args.shape_type == 'platform':
+                    data['box_position'] = model_input_data['box_position']
+                    data['box_size'] = model_input_data['box_size']
+
+                if self.args.shape_type == 'sphere':
+                    data['sphere_position'] = model_input_data['sphere_position']
+                    data['sphere_radius'] = model_input_data['sphere_radius']
+
+                if self. args.shape_type == 'rod':
+                    data['rod_size'] = model_input_data['rod_size']
+                    data['rod_position'] = model_input_data['rod_position']
 
             # for ablation that fixes the collision edge as those computed in the firs time step
             if not self.datasets['train'].args.fix_collision_edge:
@@ -410,7 +422,7 @@ class DynamicIA(object):
 
             pc_pos, pc_vel_his, picker_pos = self.update_graph(pred_accel, pc_pos, pc_vel_his,
                                                                graph_data['picked_status'],
-                                                               graph_data['picked_particles'])
+                                                               graph_data['picked_particles'],model_input_data)
             reward = reward_model(pc_pos)
             ret += reward
 
@@ -436,13 +448,34 @@ class DynamicIA(object):
                     pred_rewards=pred_rewards,
                     gt_pos_rewards=gt_pos_rewards)
 
-    def update_graph(self, pred_accel, pc_pos, velocity_his, picked_status, picked_particles):
+    def update_graph(self, pred_accel, pc_pos, velocity_his, picked_status, picked_particles,model_input_data):
         """ Euler integration"""
         # vel_his: [v(t-20), ... v(t)], v(t) = (p(t) - o(t-5)) / (5*dt)
         pred_time_interval = self.args.pred_time_interval
         pred_vel = velocity_his[:, -3:] + pred_accel * self.args.dt * pred_time_interval
         pc_pos = pc_pos + pred_vel * self.args.dt * pred_time_interval
         pc_pos[:, 1] = np.maximum(pc_pos[:, 1], self.args.particle_radius)  # z should be non-negative
+
+        if hasattr(self.args, 'shape_type'):
+            if self.args.shape_type == 'platform':
+                pc_pos_ = abs(pc_pos - model_input_data['box_position']) - model_input_data['box_size']
+                # check pc_pos_ < 0: if true, then the particle is inside the box, and should be moved up outside
+                for i in range(pc_pos_.shape[0]):
+                    if pc_pos_[i, 0] < 0 and pc_pos_[i, 1] < 0 and pc_pos_[i, 2] < 0:
+                        pc_pos[i, 1] = model_input_data['box_size'][1] + self.args.particle_radius
+            if self.args.shape_type == 'sphere':
+                pc_pos_ = np.linalg.norm(pc_pos - model_input_data['sphere_position'], axis=1) - model_input_data['sphere_radius']
+                vector_to_sphere = pc_pos - model_input_data['sphere_position']
+                # check pc_pos_ < 0: if true, then the particle is inside the box, and should be moved up outside
+                for i in range(pc_pos_.shape[0]):
+                    if pc_pos_[i] < 0:
+                        pc_pos[i, 1] = (model_input_data['sphere_radius'] **2 - vector_to_sphere[i, 0] **2 - vector_to_sphere[i, 2] **2) ** 0.5 + model_input_data['sphere_position'][1] + self.args.particle_radius
+            if self.args.shape_type == 'rod':
+                pc_pos_ = abs(pc_pos - model_input_data['rod_position']) - model_input_data['rod_size']
+                # check pc_pos_ < 0: if true, then the particle is inside the box, and should be moved up outside
+                for i in range(pc_pos_.shape[0]):
+                    if pc_pos_[i, 0] < 0 and pc_pos_[i, 1] < 0 and pc_pos_[i, 2] < 0:
+                        pc_pos[i, 1] = model_input_data['rod_size'][1] + self.args.particle_radius + model_input_data['rod_position'][1]
 
         # udpate position and velocity from the model prediction
         velocity_his = np.hstack([velocity_his[:, 3:], pred_vel])

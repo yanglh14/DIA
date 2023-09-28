@@ -6,25 +6,20 @@ from DIA.utils.camera_utils import project_to_image, get_target_pos
 
 class RandomShootingUVPickandPlacePlanner():
 
-    def __init__(self, num_pick, delta_y, pull_step, wait_step,
-                    dynamics, reward_model, num_worker=10,  
-                    move_distance_range=[0.05, 0.2], gpu_num=1,
-                    image_size=None, normalize_info=None, delta_y_range=None, 
-                    matrix_world_to_camera=np.identity(4), task='flatten',
+    def __init__(self, num_pick,
+                    dynamics, reward_model, num_worker=10, gpu_num=1,
+                    image_size=None, normalize_info=None,
+                    matrix_world_to_camera=np.identity(4),
                     use_pred_rwd=False,
-                    delta_acc_range=[0, 1], dt=0.01, env=None, args=None):
+                    delta_acc_range=[0, 1], dt=0.01, env=None, args=None,control_sequence_num=20):
         """
         Random Shooting planner.
         """
 
         self.normalize_info = normalize_info  # Used for robot experiments to denormalize before action clipping
         self.num_pick = num_pick
-        self.delta_y = delta_y # for real world experiment, delta_y (pick_height) is fixed
-        self.delta_y_range = delta_y_range  # for simulation, delta_y is randomlized
-        self.move_distance_low, self.move_distance_high = move_distance_range[0], move_distance_range[1]
         self.reward_model = reward_model
         self.dynamics = dynamics
-        self.pull_step, self.wait_step = pull_step, wait_step
         self.gpu_num = gpu_num
         self.use_pred_rwd = use_pred_rwd
 
@@ -33,16 +28,16 @@ class RandomShootingUVPickandPlacePlanner():
         self.num_worker = num_worker
         self.matrix_world_to_camera = matrix_world_to_camera
         self.image_size = image_size
-        self.task = task
 
         self.delta_acc_range = delta_acc_range
         self.dt = dt
         self.env = env
         self.args = args
+        self.control_sequence_num = control_sequence_num
     def project_3d(self, pos):
         return project_to_image(self.matrix_world_to_camera, pos, self.image_size[0], self.image_size[1])
 
-    def get_action(self, init_data,control_sequence_idx = 0, control_sequence_num=20,  robot_exp=False, check_mask=None, m_name='vsbl'):
+    def get_action(self, init_data, control_sequence_idx = 0,  robot_exp=False, m_name='vsbl'):
         """
         check_mask: Used to filter out place points that are on the cloth.
         init_data should be a list that include:
@@ -59,101 +54,31 @@ class RandomShootingUVPickandPlacePlanner():
 
         # paralleled version of generating action sequences
         if robot_exp:
-            num_samples = 10 * self.num_pick  # Reject
 
-            def filter_out_of_bound(pos, x_low=-0.45, x_high=0.06, z_low=0.3, z_high=0.65):
-                """Rreturn in bound idxes"""
-                cond1 = pos[:, 0] >= x_low
-                cond2 = pos[:, 0] <= x_high
-                cond3 = pos[:, 2] >= z_low
-                cond4 = pos[:, 2] <= z_high
-                cond = cond1 * cond2 * cond3 * cond4
-                return np.where(cond)[0]
+            raise NotImplementedError
 
-            idxes = np.random.randint(0, len(pointcloud), num_samples)
-
-            # In real world, instead of using uv, simply pick a random idx
-            pickup_pos = pointcloud[idxes]
-
-            # Remove out of bound pick places
-            x_mean, z_mean = self.normalize_info['xz_mean']  # First denormalize
-            pickup_pos[:, 0] += x_mean
-            pickup_pos[:, 2] += z_mean
-            in_bound_idx = filter_out_of_bound(pickup_pos)
-            pickup_pos[:, 0] -= x_mean
-            pickup_pos[:, 2] -= z_mean
-            pickup_pos = pickup_pos[in_bound_idx]
-            idxes = idxes[in_bound_idx]
-            num_samples = len(pickup_pos)
-
-            move_theta = np.random.rand(num_samples).reshape(num_samples, 1) * 2 * np.pi
-            move_distance = np.random.uniform(self.move_distance_low, self.move_distance_high, num_samples)
-            move_direction = np.hstack(
-                [np.cos(move_theta), np.zeros_like(move_theta), np.sin(move_theta)]) * move_distance.reshape(
-                num_samples, 1)
-
-            place_pos = (pickup_pos + move_direction).copy()
-
-            # Clip place_pos with a fixed bounding box to make sure the place point is within the camera
-            x_mean, z_mean = self.normalize_info['xz_mean']  # First denormalize
-            place_pos[:, 0] += x_mean
-            place_pos[:, 2] += z_mean
-            in_bound_idx = filter_out_of_bound(place_pos)
-            place_pos[:, 0] -= x_mean
-            place_pos[:, 2] -= z_mean
-
-            if check_mask is not None:
-                out_cloth_idx = np.where(check_mask(place_pos))[0]
-                # print('in bound number:', in_bound_idx.shape)
-                # print(in_bound_idx[:50], out_cloth_idx[:50])
-                in_bound_idx = np.intersect1d(in_bound_idx, out_cloth_idx)
-                # print(in_bound_idx)
-                # print('how many left:', in_bound_idx.shape)
-
-            select_idx = np.random.choice(in_bound_idx, self.num_pick, replace=len(in_bound_idx) < self.num_pick)
-            pickup_pos = pickup_pos[select_idx]
-            place_pos = place_pos[select_idx]
-            idxes = idxes[select_idx]
-            waypoints = np.zeros([self.num_pick, 3, 3])
-
-            waypoints[:, 0, :] = pickup_pos
-            waypoints[:, 1, :] = pickup_pos + np.array([0, self.delta_y, 0]).reshape(1, 3)
-            waypoints[:, 2, :] = place_pos + np.array([0, self.delta_y, 0]).reshape(1, 3)
-
-            # Update move_direction after clipping
-            move_direction = waypoints[:, 2, :] - waypoints[:, 1, :]
-
-            delta_moves = list(move_direction / self.pull_step)
-            picked_particles = list(idxes)
-            waypoints = list(waypoints)
-            move_vec = list(move_direction)
-            # TODO try using delta_y_raneg instead of fixed y
-            delta_move = move_direction
-            delta_move[:, 1] += self.delta_y
-            num_step = self.pull_step
-            actions[:-1, :num_step, :3] = delta_move[:, None, :] / num_step # Upward
-            actions[:-1, :num_step, 3] = 1
-            actions[:, :, 4:] = 0  # we essentially only plan over 1 picker action
-
-            # Add no-op
-            if not self.random:
-                waypoints.append([np.nan, np.nan, np.nan])
-                delta_moves.append([0., 0., 0.])
-                picked_particles.append(-1)
-                move_vec.append([0., 0., 0.])
         else:  # simulation planning
             if control_sequence_idx==0:
                 self.tool_state = np.zeros(6)
 
+            interval = (self.delta_acc_range[1]-self.delta_acc_range[0])/self.num_pick
+            sampling_noise = [self.delta_acc_range[0] + i * interval for i in range(self.num_pick)]
+
             params = [
-                (control_sequence_idx, control_sequence_num, self.delta_acc_range, self.dt, self.env, self.args.pred_time_interval, self.tool_state.copy())
+                (control_sequence_idx, self.control_sequence_num, sampling_noise[i], self.dt, self.env, self.args.pred_time_interval, self.tool_state.copy())
                 for i in range(self.num_pick)
             ]
-            if self.num_worker > 0:
-                results = self.pool.map(_parallel_generate_actions, params)
-            else:
-                results = [_parallel_generate_actions(param) for param in params]
 
+            if self.num_worker > 0:
+                results = self.pool.map(_parallel_generate_actions_v4, params)
+            else:
+                # results = [_parallel_generate_actions_v3(param) for param in params]
+                if self.args.shape_type == 'rod':
+                    results = [_parallel_generate_actions_rod(param) for param in params]
+                elif self.args.shape_type == 'sphere':
+                    results = [_parallel_generate_actions_sphere(param) for param in params]
+                elif self.args.shape_type == 'platform':
+                    results = [_parallel_generate_actions_v4_pick_drop(param) for param in params]
             actions = np.array(results)
 
         # parallely rollout the dynamics model with the sampled action seqeunces
@@ -191,18 +116,11 @@ class RandomShootingUVPickandPlacePlanner():
         ret_info['highest_return_idx'] = highest_return_idx
         ret_info['highest_return'] = returns[highest_return_idx]
         action_seq = actions[highest_return_idx]
-        # if robot_exp:
-        #     ret_info['waypoints'] = np.array(waypoints[highest_return_idx]).copy()
-        #     ret_info['all_candidate'] = np.array(waypoints[:-1])
-        #     ret_info['all_candidate_rewards'] = np.array(returns[:-1])
-        # else:
-        #     ret_info['start_pos'] = start_poses[highest_return_idx]
-        #     ret_info['after_pos'] = after_poses[highest_return_idx]
 
         model_predict_particle_positions = results[highest_return_idx]['model_positions']
         model_predict_shape_positions = results[highest_return_idx]['shape_positions']
         predicted_edges = results[highest_return_idx]['mesh_edges']
-
+        print('highest_return_idx', highest_return_idx)
         return action_seq, model_predict_particle_positions, model_predict_shape_positions, ret_info, predicted_edges, results
 
 
@@ -214,7 +132,8 @@ def pos_in_image(after_pos, matrix_world_to_camera, image_size):
     else:
         return False
 
-def _parallel_generate_actions(args):
+def _parallel_generate_actions_v4(args):
+    # sample action for v4 pick and drop
     control_sequence_idx, control_sequence_num, delta_acc_range, dt, env, pred_time_interval,state = args
     acc_delta_value = np.random.uniform(
         delta_acc_range[0],
@@ -225,16 +144,16 @@ def _parallel_generate_actions(args):
     for step in range(control_sequence_idx, control_sequence_num):
 
         if step < control_sequence_num/ 4:
-            acc_direction = np.array([5., -2., 0])
+            acc_direction = np.array([6, -1.6, 0], dtype=np.float32)
 
         elif step < control_sequence_num / 2:
-            acc_direction = np.array([-5., -2., 0])
+            acc_direction = np.array([-6, -1.6, 0], dtype=np.float32)
 
         elif step < control_sequence_num * 3 / 4:
-            acc_direction = np.array([-5., 2., 0])
+            acc_direction = np.array([-3, 1.6, 0], dtype=np.float32)
 
         else:
-            acc_direction = np.array([5., 2., 0])
+            acc_direction = np.array([3, 1.6, 0], dtype=np.float32)
 
         acc_direction[0] = acc_direction[0] + acc_delta_value[step]
 
@@ -244,35 +163,139 @@ def _parallel_generate_actions(args):
 
         action = np.zeros_like(env.action_space.sample())
         action[:3], action[4:7] = state[0:3], state[0:3]
-        action[7], action[3] = 1, 1
-
+        if not step > control_sequence_num * 0.75:
+            action[7], action[3] = 1, 1
+        else:
+            action[7], action[3] = 0, 0
         action_list.append(action)
 
     return action_list
 
-def parallel_generate_actions(args):
-    us, vs, image_size, pointcloud, pull_step, delta_y_range, bb_margin, matrix_world_to_camera, move_distance_low, move_distance_high, cloth_mask, task = args
+def _parallel_generate_actions_v4_pick_drop(args):
+    # in this sampling, only first action change
+    control_sequence_idx, control_sequence_num, sampling_noise, dt, env, pred_time_interval,state = args
 
-    # choosing a pick location
-    lb_u, lb_v, ub_u, ub_v = int(np.min(us)), int(np.min(vs)), int(np.max(us)), int(np.max(vs))
-    u = np.random.randint(max(lb_u - bb_margin, 0), min(ub_u + bb_margin, image_size[1]))
-    v = np.random.randint(max(lb_v - bb_margin, 0), min(ub_v + bb_margin, image_size[0]))
-    target_pos = get_target_pos(pointcloud, u, v, image_size, matrix_world_to_camera, cloth_mask)
+    action_list = []
 
-    # second stage: choose a random (x, y, z) direction, move towards that direction to determine the pick point
-    while True:
-        move_direction = np.random.rand(3) - 0.5
-        if task == 'flatten':
-            move_direction[1] = np.random.uniform(delta_y_range[0], delta_y_range[1])
-        else: # for fold, just generate horizontal move 
-            move_direction[1] = 0
+    for step in range(control_sequence_idx, control_sequence_num):
 
-        move_direction = move_direction / np.linalg.norm(move_direction)
-        move_distance = np.random.uniform(move_distance_low, move_distance_high)
-        delta_move = move_distance / pull_step * move_direction
+        if step < control_sequence_num/ 4:
+            acc_direction = np.array([6, -1.6, 0], dtype=np.float32)
 
-        after_pos = target_pos + move_distance * move_direction
-        if pos_in_image(after_pos, matrix_world_to_camera, image_size):
-            break
+        elif step < control_sequence_num / 2:
+            acc_direction = np.array([-6, -1.6, 0], dtype=np.float32)
 
-    return delta_move, target_pos, after_pos
+        elif step < (control_sequence_num * 3 / 4) - control_sequence_num /8:
+            acc_direction = np.array([-5 - sampling_noise, 1.6, 0], dtype=np.float32)
+
+        elif step < (control_sequence_num * 3 / 4):
+            acc_direction = np.array([7.5 - sampling_noise, 1.6, 0], dtype=np.float32)
+
+        # elif step < (control_sequence_num * 3 / 4):
+        #     acc_direction = np.array([-3, 1.6, 0], dtype=np.float32)
+
+        else:
+            acc_direction = np.array([3, 1.6, 0], dtype=np.float32)
+
+        if step == control_sequence_idx:
+            acc_direction[0] = acc_direction[0] + sampling_noise
+
+        state[3:6] = acc_direction * dt * pred_time_interval
+
+        state[0:3] += state[3:6] * dt * pred_time_interval
+
+        action = np.zeros_like(env.action_space.sample())
+        action[:3], action[4:7] = state[0:3], state[0:3]
+        action[7], action[3] = 1, 1
+
+        if not step >= control_sequence_num * 0.75:
+            action[7], action[3] = 1, 1
+        else:
+            action[:]= 0
+        action_list.append(action)
+
+    return action_list
+
+def _parallel_generate_actions_sphere(args):
+    """ sampling actions for sphere """
+
+    control_sequence_idx, control_sequence_num, sampling_noise, dt, env, pred_time_interval,state = args
+
+    action_list = []
+
+    for step in range(control_sequence_idx, control_sequence_num):
+
+        if step <= control_sequence_num*0.8/ 4:
+            acc_direction = np.array([6, -1.6, 0], dtype=np.float32)
+
+        elif step <= control_sequence_num*0.8 / 2:
+            acc_direction = np.array([-6, -1.6, 0], dtype=np.float32)
+
+        elif step <= (control_sequence_num*0.8 * 3 / 4):
+            acc_direction = np.array([-3, 1.6, 0], dtype=np.float32)
+
+        elif step <= control_sequence_num*0.8:
+            acc_direction = np.array([3, 1.6, 0], dtype=np.float32)
+
+        else:
+            acc_direction = np.array([0, 0, 0], dtype=np.float32)
+
+        if step == control_sequence_idx:
+            acc_direction[0] = acc_direction[0] + sampling_noise
+
+        state[3:6] = acc_direction * dt * pred_time_interval
+
+        state[0:3] += state[3:6] * dt * pred_time_interval
+
+        action = np.zeros_like(env.action_space.sample())
+        action[:3], action[4:7] = state[0:3], state[0:3]
+
+        if not step >= control_sequence_num * 0.8* 3 / 4:
+            action[7], action[3] = 1, 1
+        else:
+            action[:]= 0
+        action_list.append(action)
+
+    return action_list
+
+def _parallel_generate_actions_rod(args):
+    """ sampling actions for rod """
+
+    control_sequence_idx, control_sequence_num, sampling_noise, dt, env, pred_time_interval,state = args
+
+    action_list = []
+
+    for step in range(control_sequence_idx, control_sequence_num):
+
+        if step <= control_sequence_num*0.8/ 4:
+            acc_direction = np.array([6, -1.6, 0], dtype=np.float32)
+
+        elif step <= control_sequence_num*0.8 / 2:
+            acc_direction = np.array([-6, -1.6, 0], dtype=np.float32)
+
+        elif step <= (control_sequence_num*0.8 * 3 / 4):
+            acc_direction = np.array([-3, 1.6, 0], dtype=np.float32)
+
+        elif step <= control_sequence_num*0.8:
+            acc_direction = np.array([3, 1.6, 0], dtype=np.float32)
+
+        else:
+            acc_direction = np.array([0, 0, 0], dtype=np.float32)
+
+        if step == control_sequence_idx:
+            acc_direction[0] = acc_direction[0] + sampling_noise
+
+        state[3:6] = acc_direction * dt * pred_time_interval
+
+        state[0:3] += state[3:6] * dt * pred_time_interval
+
+        action = np.zeros_like(env.action_space.sample())
+        action[:3], action[4:7] = state[0:3], state[0:3]
+
+        if not step >= control_sequence_num * 0.8:
+            action[7], action[3] = 1, 1
+        else:
+            action[:]= 0
+        action_list.append(action)
+
+    return action_list

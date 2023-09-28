@@ -1,9 +1,23 @@
-from DIA.utils.utils import downsample, load_data, load_data_list, store_h5_data, voxelize_pointcloud, pc_reward_model
-import numpy as np
+import os
 
-picker_position_list = []
-for i in range(1800):
-    data_cur = load_data('./data/dia_baseline/train', i, 99, ['picker_position'])
-    picker_position_list.append(data_cur['picker_position'][0][0])
-picker_position_list = np.array(picker_position_list)
-print(picker_position_list.shape)
+# Specify the directory path where you want to rename folders
+directory_path = './data/dia_platform3/valid'
+
+# List all folders in the directory
+folders = [folder for folder in os.listdir(directory_path) if os.path.isdir(os.path.join(directory_path, folder))]
+folders.sort()
+# Iterate through the folders and rename them
+for old_folder_name in folders:
+    # Define the new folder name (you can modify this as needed)
+    new_folder_name = "{}".format( int(old_folder_name) -6000)
+
+    # Create the full paths for the old and new folders
+    old_folder_path = os.path.join(directory_path, old_folder_name)
+    new_folder_path = os.path.join(directory_path, new_folder_name)
+
+    # Rename the folder
+    os.rename(old_folder_path, new_folder_path)
+
+    print(f"Renamed: {old_folder_path} to {new_folder_path}")
+
+print("All folders renamed successfully.")
