@@ -256,6 +256,8 @@ def main(args):
         gt_positions, gt_shape_positions, model_pred_particle_poses, model_pred_shape_poses, predicted_edges_all, predicted_performances = [], [], [], [], [], []
         actual_control_num = 0
         frames_top = []
+        result_steps = {}
+
 
         flex_states, start_poses, after_poses = [env.get_state()], [], []
         obses = [env.get_image(env.camera_width, env.camera_height)]
@@ -320,8 +322,8 @@ def main(args):
 
             print("config {} control sequence idx {}".format(config_id, control_sequence_idx), flush=True)
 
-            if control_sequence_idx == 0:
-                result_step_0 = results
+            if control_sequence_idx >= 0:
+                result_steps[control_sequence_idx] = results
 
             # record data for plotting
             model_pred_particle_poses.append(model_pred_particle_pos)
@@ -425,11 +427,11 @@ def main(args):
 
                     save_numpy_as_gif(_frames, osp.join(log_dir_episode,'{}-{}-{}.gif'.format(episode_idx,control_sequence_idx, name)))
 
-                if control_sequence_idx==0:
+                if control_sequence_idx>=0:
                     model_pred_particle_poses_all = []
                     for i in range(args.shooting_number):
 
-                        frames_model_sample_action = visualize(render_env, result_step_0[i]['model_positions'],
+                        frames_model_sample_action = visualize(render_env, result_steps[control_sequence_idx][i]['model_positions'],
                                                  model_pred_shape_poses[control_sequence_idx],
                                                  config_id, range(model_pred_particle_poses[control_sequence_idx].shape[1]))
 
@@ -438,7 +440,7 @@ def main(args):
                             _frames[t] = draw_target_pos(_frames[t], env.get_current_config()['target_pos'], matrix_world_to_camera[:3, :],
                                                  env.camera_height, env.camera_width, env._get_key_point_idx())
 
-                        log_dir_episode_sample_action = osp.join(log_dir_episode, 'sample_action')
+                        log_dir_episode_sample_action = osp.join(log_dir_episode, 'sample_action_{}'.format(control_sequence_idx))
                         os.makedirs(log_dir_episode_sample_action, exist_ok=True)
                         save_numpy_as_gif(_frames, osp.join(log_dir_episode_sample_action,'{}-{}-ActionSampling{}.gif'.format(episode_idx,control_sequence_idx , i)))
 
