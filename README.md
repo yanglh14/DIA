@@ -1,9 +1,5 @@
 <h1> Learning Visible Connectivity Dynamics for Cloth Smoothing</h1>
 
-Xingyu Lin*, Yufei Wang*, Zixuan Huang, David Held, CoRL 2021. `*` indicates equal contribution (order by dice rolling).
-
-[Website](https://sites.google.com/view/vcd-cloth/home) /  [ArXiv](https://arxiv.org/pdf/2105.10389.pdf) 
-
 # Table of Contents
 - 1 [Simulation](#simulation)
     - 1.1 [Setup](#setup)
