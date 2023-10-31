@@ -1,7 +1,7 @@
 import numpy as np
 import os
 
-from DIA.models import GNN
+from DIA.module.models import GNN
 
 import torch
 import torch.nn as nn
@@ -14,14 +14,14 @@ from DIA.utils.camera_utils import get_matrix_world_to_camera, project_to_image
 import matplotlib.pyplot as plt
 import torch_geometric
 
-from DIA.dataset_edge import ClothDatasetPointCloudEdge
+from DIA.module.dataset_edge import ClothDatasetPointCloudEdge
 from DIA.utils.utils import extract_numbers
 from DIA.utils.data_utils import AggDict
 import json
 from tqdm import tqdm
 
 
-class AdaptationModel(object):
+class Edge(object):
     def __init__(self, args, env=None):
         self.args = args
         self.model = GNN(args, decoder_output_dim=1, name='EdgeGNN')  # Predict 0/1 Label for mesh edge classification
@@ -45,6 +45,12 @@ class AdaptationModel(object):
         self.log_dir = logger.get_dir()
         self.bce_logit_loss = nn.BCEWithLogitsLoss()
         self.load_epoch = 0
+
+    def generate_dataset(self):
+        os.system('mkdir -p ' + self.args.dataf)
+        for phase in ['train', 'valid']:
+            self.datasets[phase].generate_dataset()
+        print('Dataset generated in', self.args.dataf)
 
     def plot(self, phase, epoch, i):
         data_folder = osp.join(self.args.dataf, phase)
@@ -201,7 +207,7 @@ class AdaptationModel(object):
             data['u'] = torch.zeros([1, self.args.global_size], device=self.device)
             for key in ['x', 'edge_index', 'edge_attr']:
                 data[key] = data[key].to(self.device)
-            pred_mesh_edge = self.model(data)['mesh_edge']
+            pred_mesh_edge = self.model(data)['mesh_edge']  
 
         pred_mesh_edge_logits = pred_mesh_edge.cpu().numpy()
         pred_mesh_edge = pred_mesh_edge_logits > 0
@@ -238,7 +244,7 @@ class AdaptationModel(object):
             data['u'] = torch.zeros([1, self.args.global_size], device=self.device)
             for key in ['x', 'edge_index', 'edge_attr']:
                 data[key] = data[key].to(self.device)
-            pred_mesh_edge_logits = self.model(data)['mesh_edge']
+            pred_mesh_edge_logits = self.model(data)['mesh_edge']  
 
         pred_mesh_edge_logits = pred_mesh_edge_logits.cpu().numpy()
         pred_mesh_edge = pred_mesh_edge_logits > 0

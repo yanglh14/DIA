@@ -1,4 +1,5 @@
 *.pth
+output
 *.zip
 pretrained/dataset
 *.pkl
@@ -144,3 +145,4 @@ DPI-Net/dump_*/
 
 test_*/
 imgs/
+outputs/

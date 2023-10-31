@@ -8,14 +8,15 @@ import numpy as np
 import scipy
 from tqdm import tqdm
 from chester import logger
+from omegaconf import OmegaConf
 
 import torch
 import torch_geometric
 
 from softgym.utils.visualization import save_numpy_as_gif
 
-from DIA.models import GNN
-from DIA.dataset import ClothDataset
+from DIA.module.models import GNN
+from DIA.module.dataset import ClothDataset
 from DIA.utils.data_utils import AggDict
 from DIA.utils.utils import extract_numbers, pc_reward_model, visualize, cloth_drop_reward_fuc
 from DIA.utils.camera_utils import get_matrix_world_to_camera, project_to_image
@@ -29,9 +30,10 @@ class DynamicIA(object):
         self.train_mode = args.train_mode
         self.device = torch.device(self.args.cuda_idx)
         self.input_types = ['full', 'vsbl'] if self.train_mode == 'graph_imit' else [self.train_mode]
+        self.output_type = args.output_type
         self.models, self.optims, self.schedulers = {}, {}, {}
         for m in self.input_types:
-            self.models[m] = GNN(args, decoder_output_dim=3, name=m, use_reward=False if self.train_mode == 'vsbl' else True)  # Predict acceleration
+            self.models[m] = GNN(args.model, decoder_output_dim=3, name=m, use_reward=False if self.train_mode == 'vsbl' else True)
             lr = getattr(self.args, m + '_lr') if hasattr(self.args, m + '_lr') else self.args.lr
             self.optims[m] = torch.optim.Adam(self.models[m].param(), lr=lr, betas=(self.args.beta1, 0.999))
             self.schedulers[m] = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optims[m], 'min', factor=0.8,
@@ -46,7 +48,7 @@ class DynamicIA(object):
             self.models[self.input_types[0]].freeze()
 
         # Create Dataloaders
-        self.datasets = {phase: ClothDataset(args, self.input_types, phase, env) for phase in ['train', 'valid']}
+        self.datasets = {phase: ClothDataset(args.dataset, self.input_types, phase, env, self.train_mode) for phase in ['train', 'valid']}
         for phase in ['train', 'valid']: self.datasets[phase].vcd_edge = self.vcd_edge
 
         follow_batch = ['x_{}'.format(t) for t in self.input_types]
@@ -68,17 +70,169 @@ class DynamicIA(object):
             print('Weights & Biases is initialized with run name {}'.format(args.exp_name))
             wandb.config.update(args, allow_val_change=True)
 
+    def train(self):
+        # Training loop
+        st_epoch = self.load_epoch if hasattr(self, 'load_epoch') else 0
+        print('st epoch ', st_epoch)
+        best_valid_loss = {m_name: np.inf for m_name in self.models}
+        phases = ['train','valid'] if self.args.eval == 0 else ['valid']
+        for epoch in range(st_epoch, self.args.n_epoch):
+            for phase in phases:
+                self.set_mode(phase)
+                # Log all the useful metrics
+                epoch_infos = {m: AggDict(is_detach=True) for m in self.models}
+
+                epoch_len = len(self.dataloaders[phase])
+                for i, data in tqdm(enumerate(self.dataloaders[phase]), desc=f'Epoch {epoch}, phase {phase}'):
+                    data = data.to(self.device).to_dict()
+                    iter_infos = {m_name: AggDict(is_detach=False) for m_name in self.models}
+                    preds = {}
+                    last_global = torch.zeros(self.args.batch_size, self.args.model.global_size, dtype=torch.float32,
+                                              device=self.device)
+                    with torch.set_grad_enabled(phase == 'train'):
+                        for (m_name, model), iter_info in zip(self.models.items(), iter_infos.values()):
+                            inputs = self.retrieve_data(data, m_name)
+                            inputs['u'] = last_global
+                            pred = model(inputs)
+                            preds[m_name] = pred
+
+                            iter_info.add_item('{}_loss'.format(self.output_type), self.mse_loss(pred['pred'], inputs['gt_accel'] if self.output_type=='accel' else inputs['gt_vel']))
+                            iter_info.add_item('sqrt_{}_loss'.format(self.output_type), torch.sqrt(iter_info['{}_loss'.format(self.output_type)]))
+                            if self.train_mode != 'vsbl':
+                                iter_info.add_item('reward_loss',
+                                                   self.mse_loss(pred['reward_nxt'].squeeze(), inputs['gt_reward_nxt']))
+
+                    if self.args.train_mode == 'graph_imit':  # Graph imitation
+                        iter_infos['vsbl'].add_item('imit_node_loss', self.mse_loss(preds['vsbl']['n_nxt'],
+                                                                                    preds['full']['n_nxt'].detach()))
+                        iter_infos['vsbl'].add_item('imit_lat_loss', self.mse_loss(preds['vsbl']['lat_nxt'],
+                                                                                   preds['full']['lat_nxt'].detach()))
+                    for m_name in self.models:
+                        iter_info = iter_infos[m_name]
+                        for feat in ['n_nxt', 'lat_nxt']:  # Node and global output
+                            iter_info.add_item(feat + '_norm', torch.norm(preds[m_name][feat], dim=1).mean())
+
+                        if self.args.train_mode == 'vsbl':  # Student loss
+                            iter_info.add_item('total_loss', iter_info['{}_loss'.format(self.output_type)])
+                        elif self.args.train_mode == 'graph_imit' and m_name == 'vsbl':  # Student loss
+                            iter_info.add_item('imit_loss',
+                                               iter_info['imit_lat_loss'] * self.args.imit_w_lat + iter_info[
+                                                   'imit_node_loss'])
+                            iter_info.add_item('total_loss',
+                                               iter_info['accel_loss'] + self.args.imit_w * iter_info[
+                                                   'imit_loss'] +
+                                               + self.args.reward_w * iter_info['reward_loss'])
+                        else:  # Teacher loss or no graph imitation
+                            iter_info.add_item('total_loss',
+                                               iter_info['accel_loss'] + self.args.reward_w * iter_info['reward_loss'])
+
+                        if phase == 'train':
+                            if not (self.train_mode == 'graph_imit' and m_name == 'full' and not self.args.tune_teach):
+                                self.optims[m_name].zero_grad()
+                                iter_info['total_loss'].backward()
+                                self.optims[m_name].step()
+
+                        epoch_infos[m_name].update_by_add(iter_infos[m_name])  # Aggregate info
+
+                # rollout evaluation
+                nstep_eval_rollout = self.args.nstep_eval_rollout
+                data_folder = osp.join(self.args.dataset.dataf, phase)
+                traj_ids = np.random.permutation(len(os.listdir(data_folder)))[:nstep_eval_rollout]
+                rollout_infos = {}
+                for m_name in self.models:
+                    rollout_info = AggDict()
+                    for idx, traj_id in enumerate(traj_ids):
+                        with torch.no_grad():
+                            self.set_mode('eval')
+                            traj_rollout_info = self.load_data_and_rollout(m_name, traj_id, phase)
+
+                        rollout_info.update_by_add(
+                            dict(rollout_pos_error=np.array(traj_rollout_info['rollout_pos_error']).mean(),
+                                 reward_pred_error=np.array(traj_rollout_info['reward_pred_error']).mean(),
+                                 planning_error=np.array(traj_rollout_info['planning_error']).mean()))
+
+                        if self.args.local == True:
+                            frames_model = visualize(self.datasets[phase].env, traj_rollout_info['model_positions'],
+                                                     traj_rollout_info['shape_positions'],
+                                                     traj_rollout_info['config_id'])
+                            frames_gt = visualize(self.datasets[phase].env, traj_rollout_info['gt_positions'],
+                                                  traj_rollout_info['shape_positions'],
+                                                  traj_rollout_info['config_id'])
+                            mesh_edges = traj_rollout_info['mesh_edges']
+                            if mesh_edges is not None:  # Visualization of mesh edges on the predicted model
+                                frames_edge_visual = copy.deepcopy(frames_model)
+                                matrix_world_to_camera = get_matrix_world_to_camera(self.env.camera_params[self.env.camera_name]['pos'],
+                                                                                    self.env.camera_params[self.env.camera_name]['angle'])[:3, :]  # 3 x 4
+                                for t in range(len(frames_edge_visual)):
+                                    u, v = project_to_image(matrix_world_to_camera, traj_rollout_info['model_positions'][t])
+                                    for edge_idx in range(mesh_edges.shape[1]):
+                                        s = mesh_edges[0][edge_idx]
+                                        r = mesh_edges[1][edge_idx]
+                                        start = (u[s], v[s])
+                                        end = (u[r], v[r])
+                                        color = (255, 0, 0)
+                                        thickness = 1
+                                        image = cv2.line(frames_edge_visual[t], start, end, color, thickness)
+                                        frames_edge_visual[t] = image
+
+                                combined_frames = [np.hstack([frame_gt, frame_model, frame_edge])
+                                                   for (frame_gt, frame_model, frame_edge) in
+                                                   zip(frames_gt, frames_model, frames_edge_visual)]
+
+                            else:
+                                combined_frames = [np.hstack([frame_gt, frame_model]) for (frame_gt, frame_model) in
+                                                   zip(frames_gt, frames_model)]
+                            if idx < 5:
+                                save_numpy_as_gif(np.array(combined_frames),
+                                                  osp.join(self.log_dir,
+                                                           '{}-{}-{}-{}.gif'.format(m_name, phase, epoch, idx)))
+
+                    rollout_infos[m_name] = rollout_info.get_mean(f"{m_name}/{phase}/", len(traj_ids))
+
+                if phase == 'train' and epoch % self.args.save_model_interval == 0:
+                    for m_name, model in self.models.items():
+                        suffix = '{}'.format(epoch)
+                        model.save_model(self.log_dir, m_name, suffix, self.optims[m_name])
+                if phase == 'valid':
+                    for m_name, model in self.models.items():
+                        epoch_info = epoch_infos[m_name]
+                        cur_loss = epoch_info['total_loss'].item()
+                        if not self.args.fixed_lr:
+                            self.schedulers[m_name].step(cur_loss)
+                        if cur_loss < best_valid_loss[m_name]:
+                            best_valid_loss[m_name] = cur_loss
+                            state_dict = self.args.__dict__
+                            state_dict['best_epoch'] = epoch
+                            state_dict['best_valid_loss'] = cur_loss
+                            with open(osp.join(self.log_dir, 'best_state.json'), 'w') as f:
+                                json.dump(OmegaConf.to_container(self.args, resolve=True), f, indent=2, sort_keys=True)
+                            model.save_model(self.log_dir, m_name, 'best', self.optims[m_name])
+                # logging
+                logger.record_tabular(phase + '/epoch', epoch)
+                for m_name in self.models:
+                    epoch_info, rollout_info = epoch_infos[m_name], rollout_infos[m_name]
+                    epoch_info = epoch_info.get_mean(f"{m_name}/{phase}/", epoch_len)
+                    epoch_info['lr'] = self.optims[m_name].param_groups[0]['lr']
+                    logger.log(
+                        f'{phase} [{epoch}/{self.args.n_epoch}] Loss: {epoch_info[f"{m_name}/{phase}/total_loss"]:.4f}',
+                        best_valid_loss[m_name])
+
+                    for k, v in epoch_info.items():
+                        logger.record_tabular(k, v)
+                    for k, v in rollout_info.items():
+                        logger.record_tabular(k, v)
+
+                    if self.args.use_wandb and self.args.eval == 0:
+                        wandb.log(epoch_info, step=epoch)
+                        wandb.log(rollout_info, step=epoch)
+
+                logger.dump_tabular()
+
     def retrieve_data(self, data, key):
         """ vsbl: [vsbl], full: [full], dual :[vsbl, full]  """
         identifier = '_{}'.format(key)
         out_data = {k.replace(identifier, ''): v for k, v in data.items() if identifier in k}
         return out_data
-
-    def generate_dataset(self):
-        os.system('mkdir -p ' + self.args.dataf)
-        for phase in ['train','valid']:
-            self.datasets[phase].generate_dataset()
-        print('Dataset generated in', self.args.dataf)
 
     def resume_training(self):
         pass
@@ -100,7 +254,7 @@ class DynamicIA(object):
             self.load_epoch = 0
 
     def load_data_and_rollout(self, m_name, traj_id, phase):
-        idx = traj_id * (self.args.time_step - self.args.n_his)
+        idx = traj_id * (self.args.dataset.time_step - self.args.dataset.n_his)
         dataset = self.datasets[phase]
         data = dataset.prepare_transition(idx, eval=True)
         data = dataset.remove_suffix(data, m_name)
@@ -110,8 +264,8 @@ class DynamicIA(object):
 
         # load action sequences and true particle positions
         traj_particle_pos, actions, gt_rewards = [], [], []
-        pred_time_interval = self.args.pred_time_interval
-        for t in range(max(0, self.args.n_his - pred_time_interval), self.args.time_step - pred_time_interval,
+        pred_time_interval = self.args.dataset.pred_time_interval
+        for t in range(max(0, self.args.dataset.n_his - pred_time_interval), self.args.dataset.time_step - pred_time_interval,
                        pred_time_interval):
             t_data = dataset.load_rollout_data(traj_id, t)
             if m_name == 'vsbl':
@@ -121,7 +275,7 @@ class DynamicIA(object):
             gt_rewards.append(t_data['gt_reward_crt'])
             actions.append(t_data['action'])
         res = self.rollout(
-            dict(model_input_data=copy.deepcopy(data), actions=actions, reward_model=pc_reward_model, m_name=m_name))
+            dict(model_input_data=copy.deepcopy(data), actions=actions, reward_model=cloth_drop_reward_fuc, m_name=m_name))
 
         model_positions = res['model_positions']
         shape_positions = res['shape_positions']
@@ -145,169 +299,6 @@ class DynamicIA(object):
                 'reward_pred_error': reward_pred_error,
                 'planning_error': planning_error,
                 'rollout_pos_error': pos_errors}
-
-    def train(self):
-        # Training loop
-        st_epoch = self.load_epoch if hasattr(self, 'load_epoch') else 0
-        print('st epoch ', st_epoch)
-        best_valid_loss = {m_name: np.inf for m_name in self.models}
-        phases = ['train','valid'] if self.args.eval == 0 else ['valid']
-        for epoch in range(st_epoch, self.args.n_epoch):
-            for phase in phases:
-                self.set_mode(phase)
-                # Log all the useful metrics
-                epoch_infos = {m: AggDict(is_detach=True) for m in self.models}
-
-                epoch_len = len(self.dataloaders[phase])
-                for i, data in tqdm(enumerate(self.dataloaders[phase]), desc=f'Epoch {epoch}, phase {phase}'):
-                    data = data.to(self.device).to_dict()
-                    iter_infos = {m_name: AggDict(is_detach=False) for m_name in self.models}
-                    preds = {}
-                    last_global = torch.zeros(self.args.batch_size, self.args.global_size, dtype=torch.float32,
-                                              device=self.device)
-                    with torch.set_grad_enabled(phase == 'train'):
-                        for (m_name, model), iter_info in zip(self.models.items(), iter_infos.values()):
-                            inputs = self.retrieve_data(data, m_name)
-                            inputs['u'] = last_global
-                            pred = model(inputs)
-                            preds[m_name] = pred
-                            iter_info.add_item('accel_loss', self.mse_loss(pred['accel'], inputs['gt_accel']))
-                            iter_info.add_item('sqrt_accel_loss', torch.sqrt(iter_info['accel_loss']))
-                            if self.train_mode != 'vsbl':
-                                iter_info.add_item('reward_loss',
-                                                   self.mse_loss(pred['reward_nxt'].squeeze(), inputs['gt_reward_nxt']))
-
-                    if self.args.train_mode == 'graph_imit':  # Graph imitation
-                        iter_infos['vsbl'].add_item('imit_node_loss', self.mse_loss(preds['vsbl']['n_nxt'],
-                                                                                    preds['full']['n_nxt'].detach()))
-                        iter_infos['vsbl'].add_item('imit_lat_loss', self.mse_loss(preds['vsbl']['lat_nxt'],
-                                                                                   preds['full']['lat_nxt'].detach()))
-                    for m_name in self.models:
-                        iter_info = iter_infos[m_name]
-                        for feat in ['n_nxt', 'lat_nxt']:  # Node and global output
-                            iter_info.add_item(feat + '_norm', torch.norm(preds[m_name][feat], dim=1).mean())
-
-                        if self.args.train_mode == 'vsbl':  # Student loss
-                            iter_info.add_item('total_loss', iter_info['accel_loss'])
-                        elif self.args.train_mode == 'graph_imit' and m_name == 'vsbl':  # Student loss
-                            iter_info.add_item('imit_loss',
-                                               iter_info['imit_lat_loss'] * self.args.imit_w_lat + iter_info[
-                                                   'imit_node_loss'])
-                            iter_info.add_item('total_loss',
-                                               iter_info['accel_loss'] + self.args.imit_w * iter_info[
-                                                   'imit_loss'] +
-                                               + self.args.reward_w * iter_info['reward_loss'])
-                        else:  # Teacher loss or no graph imitation
-                            iter_info.add_item('total_loss',
-                                               iter_info['accel_loss'] + self.args.reward_w * iter_info['reward_loss'])
-
-                        if phase == 'train':
-                            if not (self.train_mode == 'graph_imit' and m_name == 'full' and not self.args.tune_teach):
-                                self.optims[m_name].zero_grad()
-                                iter_info['total_loss'].backward()
-                                self.optims[m_name].step()
-
-                        epoch_infos[m_name].update_by_add(iter_infos[m_name])  # Aggregate info
-                # rollout evaluation
-                nstep_eval_rollout = self.args.nstep_eval_rollout
-                data_folder = osp.join(self.args.dataf, phase)
-                traj_ids = np.random.permutation(len(os.listdir(data_folder)))[:nstep_eval_rollout]
-                rollout_infos = {}
-                for m_name in self.models:
-                    rollout_info = AggDict()
-                    for idx, traj_id in enumerate(traj_ids):
-                        with torch.no_grad():
-                            self.set_mode('eval')
-                            traj_rollout_info = self.load_data_and_rollout(m_name, traj_id, phase)
-
-                        rollout_info.update_by_add(
-                            dict(rollout_pos_error=np.array(traj_rollout_info['rollout_pos_error']).mean(),
-                                 reward_pred_error=np.array(traj_rollout_info['reward_pred_error']).mean(),
-                                 planning_error=np.array(traj_rollout_info['planning_error']).mean()))
-
-                        frames_model = visualize(self.datasets[phase].env, traj_rollout_info['model_positions'],
-                                                 traj_rollout_info['shape_positions'],
-                                                 traj_rollout_info['config_id'])
-                        frames_gt = visualize(self.datasets[phase].env, traj_rollout_info['gt_positions'],
-                                              traj_rollout_info['shape_positions'],
-                                              traj_rollout_info['config_id'])
-                        mesh_edges = traj_rollout_info['mesh_edges']
-                        if mesh_edges is not None:  # Visualization of mesh edges on the predicted model
-                            frames_edge_visual = copy.deepcopy(frames_model)
-                            matrix_world_to_camera = get_matrix_world_to_camera(self.env.camera_params[self.env.camera_name]['pos'],
-                                                                                self.env.camera_params[self.env.camera_name]['angle'])[:3, :]  # 3 x 4
-                            for t in range(len(frames_edge_visual)):
-                                u, v = project_to_image(matrix_world_to_camera, traj_rollout_info['model_positions'][t])
-                                for edge_idx in range(mesh_edges.shape[1]):
-                                    s = mesh_edges[0][edge_idx]
-                                    r = mesh_edges[1][edge_idx]
-                                    start = (u[s], v[s])
-                                    end = (u[r], v[r])
-                                    color = (255, 0, 0)
-                                    thickness = 1
-                                    image = cv2.line(frames_edge_visual[t], start, end, color, thickness)
-                                    frames_edge_visual[t] = image
-
-                            combined_frames = [np.hstack([frame_gt, frame_model, frame_edge])
-                                               for (frame_gt, frame_model, frame_edge) in
-                                               zip(frames_gt, frames_model, frames_edge_visual)]
-
-                        else:
-                            combined_frames = [np.hstack([frame_gt, frame_model]) for (frame_gt, frame_model) in
-                                               zip(frames_gt, frames_model)]
-                        if idx < 5:
-                            save_numpy_as_gif(np.array(combined_frames),
-                                              osp.join(self.log_dir,
-                                                       '{}-{}-{}-{}.gif'.format(m_name, phase, epoch, idx)))
-                    rollout_infos[m_name] = rollout_info.get_mean(f"{m_name}/{phase}/", len(traj_ids))
-
-                if phase == 'train' and epoch % self.args.save_model_interval == 0:
-                    for m_name, model in self.models.items():
-                        suffix = '{}'.format(epoch)
-                        model.save_model(self.log_dir, m_name, suffix, self.optims[m_name])
-                # Todo : bug when determining best model
-                if phase == 'valid':
-                    for m_name, model in self.models.items():
-                        epoch_info = epoch_infos[m_name]
-                        cur_loss = epoch_info['total_loss'].item()
-                        if not self.args.fixed_lr:
-                            self.schedulers[m_name].step(cur_loss)
-                        if cur_loss < best_valid_loss[m_name]:
-                            best_valid_loss[m_name] = cur_loss
-                            state_dict = self.args.__dict__
-                            state_dict['best_epoch'] = epoch
-                            state_dict['best_valid_loss'] = cur_loss
-                            with open(osp.join(self.log_dir, 'best_state.json'), 'w') as f:
-                                json.dump(state_dict, f, indent=2, sort_keys=True)
-                            model.save_model(self.log_dir, m_name, 'best', self.optims[m_name])
-                # logging
-                logger.record_tabular(phase + '/epoch', epoch)
-                for m_name in self.models:
-                    epoch_info, rollout_info = epoch_infos[m_name], rollout_infos[m_name]
-                    epoch_info = epoch_info.get_mean(f"{m_name}/{phase}/", epoch_len)
-                    epoch_info['lr'] = self.optims[m_name].param_groups[0]['lr']
-                    logger.log(
-                        f'{phase} [{epoch}/{self.args.n_epoch}] Loss: {epoch_info[f"{m_name}/{phase}/total_loss"]:.4f}',
-                        best_valid_loss[m_name])
-
-                    for k, v in epoch_info.items():
-                        logger.record_tabular(k, v)
-                    for k, v in rollout_info.items():
-                        logger.record_tabular(k, v)
-
-                    if self.args.use_wandb and self.args.eval == 0:
-                        wandb.log(epoch_info, step=epoch)
-                        wandb.log(rollout_info, step=epoch)
-
-                logger.dump_tabular()
-
-    def set_mode(self, mode='train'):
-        for model in self.models.values():
-            model.set_mode('train' if mode == 'train' else 'eval')
-
-    def to(self, cuda_idx):
-        for model in self.models.values():
-            model.to(torch.device("cuda:{}".format(cuda_idx)))
 
     def rollout(self, args):
         """
@@ -355,13 +346,14 @@ class DynamicIA(object):
         pred_rewards = np.zeros(H)
         gt_pos_rewards = np.zeros(H)
 
+        # Todo: seems like the mesh edges are not used if no vcd edge?
         # Predict mesh during evaluation and use gt edges during training
         if self.vcd_edge is not None and mesh_edges is None:
             model_input_data['cuda_idx'] = cuda_idx
             mesh_edges = self.vcd_edge.infer_mesh_edges(model_input_data)
 
         # for ablation that uses first-time step collision edges as the mesh edges
-        if self.datasets['train'].args.use_collision_as_mesh_edge:
+        if self.args.use_collision_as_mesh_edge:
             print("construct collision edges at the first time step as mesh edges!")
             neighbor_radius = self.datasets['train'].args.neighbor_radius
             point_tree = scipy.spatial.cKDTree(pc_pos)
@@ -380,21 +372,13 @@ class DynamicIA(object):
                     'mesh_edges': mesh_edges,
                     'rest_dist': rest_dist,
                     'initial_particle_pos': initial_pc_pos}
-            if hasattr(self.args, 'shape_type'):
-                if self.args.shape_type == 'platform':
-                    data['box_position'] = model_input_data['box_position']
-                    data['box_size'] = model_input_data['box_size']
-
-                if self.args.shape_type == 'sphere':
-                    data['sphere_position'] = model_input_data['sphere_position']
-                    data['sphere_radius'] = model_input_data['sphere_radius']
-
-                if self. args.shape_type == 'rod':
-                    data['rod_size'] = model_input_data['rod_size']
-                    data['rod_position'] = model_input_data['rod_position']
+            if self.args.dataset.env_shape is not None:
+                data['shape_size'] = model_input_data['shape_size']
+                data['shape_pos'] = model_input_data['shape_pos']
+                data['shape_quat'] = model_input_data['shape_quat']
 
             # for ablation that fixes the collision edge as those computed in the firs time step
-            if not self.datasets['train'].args.fix_collision_edge:
+            if not self.args.fix_collision_edge:
                 graph_data = dataset.build_graph(data, input_type=m_name, robot_exp=robot_exp)
             else:
                 logger.log('using fixed collision edge!')
@@ -412,18 +396,21 @@ class DynamicIA(object):
                       'edge_attr': graph_data['edge_attr'].to(self.device),
                       'edge_index': graph_data['neighbors'].to(self.device),
                       'x_batch': torch.zeros(graph_data['node_attr'].size(0), dtype=torch.long, device=self.device),
-                      'u': torch.zeros([1, self.args.global_size], device=self.device)}
+                      'u': torch.zeros([1, self.args.model.global_size], device=self.device)}
 
             # obtain model predictions
             with torch.no_grad():
                 pred = self.models[m_name](inputs)
-                pred_accel = pred['accel'].cpu().numpy()
+                pred_ = pred['pred'].cpu().numpy()
                 pred_reward = pred['reward_nxt'].cpu().numpy() if 'reward_nxt' in pred else 0.
 
-            pc_pos, pc_vel_his, picker_pos = self.update_graph(pred_accel, pc_pos, pc_vel_his,
+            pc_pos, pc_vel_his, picker_pos = self.update_graph(pred_, pc_pos, pc_vel_his,
                                                                graph_data['picked_status'],
-                                                               graph_data['picked_particles'],model_input_data)
-            reward = reward_model(pc_pos)
+                                                               graph_data['picked_particles'], model_input_data)
+            if 'target_pos' in model_input_data and model_input_data['target_pos'] is not None:
+                reward = reward_model(pc_pos,model_input_data['target_pos'][model_input_data['downsample_idx']][model_input_data['partial_pc_mapped_idx']])
+            else:
+                reward = 0
             ret += reward
 
             pred_rewards[t] = pred_reward
@@ -431,13 +418,6 @@ class DynamicIA(object):
 
             if t == H - 1:
                 final_ret = reward
-                current_config = self.env.get_current_config()
-                # in training mode, no target_pos is provided; in planning mode, target_pos is provided
-                if 'target_pos' in current_config:
-
-                    target_pos = current_config['target_pos']
-                    cloth_size = current_config['ClothSize']
-                    final_ret = cloth_drop_reward_fuc(pc_pos, target_pos, cloth_size, observable_particle_index)
 
         if mesh_edges is None:  # No mesh edges input during training
             mesh_edges = data['mesh_edges']  # This is modified inside prepare_transition function
@@ -448,34 +428,23 @@ class DynamicIA(object):
                     pred_rewards=pred_rewards,
                     gt_pos_rewards=gt_pos_rewards)
 
-    def update_graph(self, pred_accel, pc_pos, velocity_his, picked_status, picked_particles,model_input_data):
+    def update_graph(self, pred_, pc_pos, velocity_his, picked_status, picked_particles,model_input_data):
         """ Euler integration"""
         # vel_his: [v(t-20), ... v(t)], v(t) = (p(t) - o(t-5)) / (5*dt)
-        pred_time_interval = self.args.pred_time_interval
-        pred_vel = velocity_his[:, -3:] + pred_accel * self.args.dt * pred_time_interval
-        pc_pos = pc_pos + pred_vel * self.args.dt * pred_time_interval
-        pc_pos[:, 1] = np.maximum(pc_pos[:, 1], self.args.particle_radius)  # z should be non-negative
+        pred_time_interval = self.args.dataset.pred_time_interval
 
-        if hasattr(self.args, 'shape_type'):
-            if self.args.shape_type == 'platform':
-                pc_pos_ = abs(pc_pos - model_input_data['box_position']) - model_input_data['box_size']
-                # check pc_pos_ < 0: if true, then the particle is inside the box, and should be moved up outside
-                for i in range(pc_pos_.shape[0]):
-                    if pc_pos_[i, 0] < 0 and pc_pos_[i, 1] < 0 and pc_pos_[i, 2] < 0:
-                        pc_pos[i, 1] = model_input_data['box_size'][1] + self.args.particle_radius
-            if self.args.shape_type == 'sphere':
-                pc_pos_ = np.linalg.norm(pc_pos - model_input_data['sphere_position'], axis=1) - model_input_data['sphere_radius']
-                vector_to_sphere = pc_pos - model_input_data['sphere_position']
-                # check pc_pos_ < 0: if true, then the particle is inside the box, and should be moved up outside
-                for i in range(pc_pos_.shape[0]):
-                    if pc_pos_[i] < 0:
-                        pc_pos[i, 1] = (model_input_data['sphere_radius'] **2 - vector_to_sphere[i, 0] **2 - vector_to_sphere[i, 2] **2) ** 0.5 + model_input_data['sphere_position'][1] + self.args.particle_radius
-            if self.args.shape_type == 'rod':
-                pc_pos_ = abs(pc_pos - model_input_data['rod_position']) - model_input_data['rod_size']
-                # check pc_pos_ < 0: if true, then the particle is inside the box, and should be moved up outside
-                for i in range(pc_pos_.shape[0]):
-                    if pc_pos_[i, 0] < 0 and pc_pos_[i, 1] < 0 and pc_pos_[i, 2] < 0:
-                        pc_pos[i, 1] = model_input_data['rod_size'][1] + self.args.particle_radius + model_input_data['rod_position'][1]
+        if self.output_type == 'accel':
+            pred_vel = velocity_his[:, -3:] + pred_ * self.args.dataset.dt * pred_time_interval
+        elif self.output_type == 'vel':
+            pred_vel = pred_
+        else:
+            raise NotImplementedError
+
+        pc_pos = pc_pos + pred_vel * self.args.dataset.dt * pred_time_interval
+        pc_pos[:, 1] = np.maximum(pc_pos[:, 1], self.args.dataset.particle_radius)  # z should be non-negative
+
+        if self.args.dataset.env_shape is not None:
+            raise NotImplementedError
 
         # udpate position and velocity from the model prediction
         velocity_his = np.hstack([velocity_his[:, 3:], pred_vel])
@@ -492,3 +461,11 @@ class DynamicIA(object):
         # update picker position, and the particles picked
         picker_pos = new_picker_pos
         return pc_pos, velocity_his, picker_pos
+
+    def set_mode(self, mode='train'):
+        for model in self.models.values():
+            model.set_mode('train' if mode == 'train' else 'eval')
+
+    def to(self, cuda_idx):
+        for model in self.models.values():
+            model.to(torch.device("cuda:{}".format(cuda_idx)))

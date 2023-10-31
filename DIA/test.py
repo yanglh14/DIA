@@ -1,23 +1,65 @@
-import os
+import numpy as np
+import matplotlib.pyplot as plt
 
-# Specify the directory path where you want to rename folders
-directory_path = './data/dia_platform3/valid'
+# initial and final segment vertices
+initial_vertices = np.array([[-1, 0], [1, 0]])
+final_vertices = np.array([[3, 3], [3, 2]])
 
-# List all folders in the directory
-folders = [folder for folder in os.listdir(directory_path) if os.path.isdir(os.path.join(directory_path, folder))]
-folders.sort()
-# Iterate through the folders and rename them
-for old_folder_name in folders:
-    # Define the new folder name (you can modify this as needed)
-    new_folder_name = "{}".format( int(old_folder_name) -6000)
+# calculate angle of rotation from initial to final segment
+angle = np.arctan2(final_vertices[1, 1] - final_vertices[0, 1], final_vertices[1, 0] - final_vertices[0, 0]) - \
+        np.arctan2(initial_vertices[1, 1] - initial_vertices[0, 1], initial_vertices[1, 0] - initial_vertices[0, 0])
 
-    # Create the full paths for the old and new folders
-    old_folder_path = os.path.join(directory_path, old_folder_name)
-    new_folder_path = os.path.join(directory_path, new_folder_name)
+# number of steps
+steps = 200
 
-    # Rename the folder
-    os.rename(old_folder_path, new_folder_path)
+# calculate angle of rotation for this step
+rotation_angle = angle / steps
 
-    print(f"Renamed: {old_folder_path} to {new_folder_path}")
+# translation vector: difference between final and initial centers
+translation = (final_vertices.mean(axis=0) - initial_vertices.mean(axis=0))
 
-print("All folders renamed successfully.")
+
+# calculate incremental translation
+translation_step = translation / steps
+
+# initialize list of vertex positions
+positions = [initial_vertices]
+
+# apply translation and rotation in each step
+for _ in range(steps):
+    # translate vertices
+    vertices = positions[-1] + translation_step
+
+    # calculate rotation matrix for this step
+    rotation_matrix = np.array([[np.cos(rotation_angle), -np.sin(rotation_angle)],
+                                [np.sin(rotation_angle), np.cos(rotation_angle)]])
+
+    # rotate vertices
+    center = vertices.mean(axis=0)
+    vertices = (rotation_matrix @ (vertices - center).T).T + center
+
+    # append vertices to positions
+    positions.append(vertices)
+
+# append final vertices to positions
+# positions.append(final_vertices)
+
+# convert list of positions to numpy array
+positions = np.array(positions)
+
+# plot initial and final segments and movement paths
+fig, ax = plt.subplots()
+
+# plot initial and final segments
+ax.plot(*positions[0].T, 'ro-', label='Initial segment')
+ax.plot(*positions[-1].T, 'bo-', label='Final segment')
+ax.plot(*final_vertices.T, 'go-', label='Desired segment')
+
+# plot movement paths
+for path in positions.transpose(1, 2, 0):
+    ax.plot(*path, 'g--')
+
+ax.set_aspect('equal', 'box')
+ax.grid(True)
+ax.legend()
+plt.show()

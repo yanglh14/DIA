@@ -4,7 +4,7 @@ from scipy import spatial
 from torch_geometric.data import Data
 
 from DIA.utils.camera_utils import get_observable_particle_index_3
-from DIA.dataset import ClothDataset
+from DIA.module.dataset import ClothDataset
 from DIA.utils.utils import load_data, voxelize_pointcloud
 
 

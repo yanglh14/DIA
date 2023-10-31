@@ -80,13 +80,9 @@ def pc_reward_model(pos, cloth_particle_radius=0.00625, downsample_scale=3):
     res = np.sum(grid) * span[0] * span[1]
     return res
 
-def cloth_drop_reward_fuc(pc_pos, target_pos, cloth_size, observable_particle_index):
+def cloth_drop_reward_fuc(pc_pos, target_pos):
     pc_pos = np.reshape(pc_pos, [-1, 3])
     target_pos = np.reshape(target_pos, [-1, 3])
-
-    cloth_xdim, cloth_ydim = cloth_size
-    downsample_idx, downsample_x_dim, downsample_y_dim = downsample(cloth_xdim, cloth_ydim, 3)
-    target_pos = target_pos[downsample_idx][observable_particle_index]
 
     # compute the distance between each particle and the target
     dist = np.linalg.norm(pc_pos - target_pos, axis=1)
@@ -110,15 +106,24 @@ def downsample(cloth_xdim, cloth_ydim, scale):
 def load_h5_data(data_names, path):
     hf = h5py.File(path, 'r')
     data = {}
+
+    if data_names == None:
+        data_names = hf.keys()
+
     for name in data_names:
         d = np.array(hf.get(name))
         data[name] = d
     hf.close()
+
     return data
 
 
 def store_h5_data(data_names, data, path):
     hf = h5py.File(path, 'w')
+
+    if data_names == None:
+        data_names = data.keys()
+
     for name in data_names:
         hf.create_dataset(name, data=data[name])
     hf.close()
@@ -137,6 +142,7 @@ def load_data_list(data_dir, idx_rollout, idx_timestep, data_names):
 
 def store_data():
     raise NotImplementedError
+
 
 
 def transform_info(all_infos):

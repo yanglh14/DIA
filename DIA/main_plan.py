@@ -1,5 +1,5 @@
 import numpy as np
-from DIA.planner import RandomShootingUVPickandPlacePlanner
+from DIA.module.planner import RandomShootingUVPickandPlacePlanner
 from chester import logger
 import json
 import os.path as osp
@@ -10,14 +10,13 @@ import pickle
 import multiprocessing as mp
 from DIA.utils.utils import (
     downsample, transform_info, draw_planned_actions, visualize, draw_edge,
-    pc_reward_model, voxelize_pointcloud, vv_to_args, set_picker_pos, cem_make_gif, configure_seed, configure_logger,draw_target_pos
+    pc_reward_model, voxelize_pointcloud, vv_to_args, cem_make_gif, configure_seed, configure_logger, draw_target_pos
 )
-from utils.utils_plan import *
 from DIA.utils.camera_utils import get_matrix_world_to_camera, get_world_coords, get_observable_particle_index_3
 from softgym.utils.visualization import save_numpy_as_gif
 
-from DIA.dynamics import DynamicIA
-from DIA.edge import Edge
+from DIA.module.dynamics import DynamicIA
+from DIA.module.edge import Edge
 import argparse
 import os
 import matplotlib.pyplot as plt
