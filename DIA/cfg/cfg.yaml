@@ -49,11 +49,14 @@ dataset:
 
 ### Dataset Collector ###
 gen_data:
+
   dataset: ${dataset}
   env: ${env}
 
-### Model ###
-train:
+### Train Dynamic Model ###
+train_dy:
+  exp_name: ${exp_name}
+
   ### Training ###
   train_mode: 'vsbl' #Should be in ["vsbl", "graph_imit", "full"] - not used anymore
   n_epoch: 1000 # Number of epochs to train
@@ -62,7 +65,7 @@ train:
   fixed_lr: false # Whether to use fixed learning rate
   batch_size: 16 # Batch size
   cuda_idx: 0 # Cuda index
-  num_workers: 1 # Number of workers for dataloader
+  num_workers: 8 # Number of workers for dataloader
   eval: 0 # Whether to evaluate the model
   nstep_eval_rollout: 20 # Number of rollouts to evaluate
   save_model_interval: 5 # Interval to save model
@@ -87,18 +90,50 @@ train:
     state_dim: 18 # Dim of node feature input. Computed based on n_his: 3 x 5 + 1 dist to ground + 2 one-hot encoding of picked particle
     relation_dim: 7 # Dim of edge feature input: 3 for directional vector + 1 for directional vector magnitude + 2 for one-hot encoding of mesh or collision edge + 1 for rest distance
 
+  ### For graph imitation ###
+  imitation:
+    vsbl_lr: 1e-4
+    full_lr: 1e-4
+    tune_teach: false
+    copy_teach: ['encoder', 'decoder']
+    imit_w_lat: 1
+    imit_w: 5
+    reward_w: 1e5
+
   dataset:
     ${dataset}
 
   env:
     ${env}
 
-### For graph imitation ###
-imitation:
-  vsbl_lr: 1e-4
-  full_lr: 1e-4
-  tune_teach: false
-  copy_teach: ['encoder', 'decoder']
-  imit_w_lat: 1
-  imit_w: 5
-  reward_w: 1e5
+train_edge:
+  exp_name: ${exp_name}
+
+  ### Training ###
+  n_epoch: 1000 # Number of epochs to train
+  beta1: 0.9 # Beta1 for Adam optimizer
+  lr: 1e-4 # Learning rate
+  batch_size: 16 # Batch size
+  cuda_idx: 0 # Cuda index
+  num_workers: 8 # Number of workers for dataloader
+  eval: 0 # Whether to evaluate the model
+  save_model_interval: 5 # Interval to save model
+  use_wandb: 0 # Whether to use wandb
+  plot_num: 8 # Number of edge prediction visuals to dump per training epoch
+  local: false # Whether train local or remote
+
+  ### Resume training ###
+  edge_model_path: null
+  load_optim: false
+
+  model:
+    global_size: 128 #Number of hidden nodes for global in GNN
+    n_his: ${dataset.n_his} # Number of history step input to the dynamics
+    proc_layer: 10 # Number of propagation layers
+    state_dim: 3 # Dim of node feature input. Computed based on n_his: 3 x 5 + 1 dist to ground + 2 one-hot encoding of picked particle
+    relation_dim: 4 # Dim of edge feature input
+
+  dataset:
+    ${dataset}
+  env:
+    ${env}

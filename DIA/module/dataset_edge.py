@@ -52,10 +52,6 @@ class ClothDatasetPointCloudEdge(ClothDataset):
             else:
                 success = True # not require vox_pc len smaller than partial_particle_pos
 
-            # NOTE: what is this for?
-            if eval and not success:
-                return None
-
             idx += next
 
         pointcloud, partial_pc_mapped_idx = get_observable_particle_index_3(vox_pc, partial_particle_pos, threshold=self.args.voxel_size)

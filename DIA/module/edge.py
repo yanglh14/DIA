@@ -6,6 +6,7 @@ from DIA.module.models import GNN
 import torch
 import torch.nn as nn
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+import wandb
 
 import os.path as osp
 
@@ -24,7 +25,8 @@ from tqdm import tqdm
 class Edge(object):
     def __init__(self, args, env=None):
         self.args = args
-        self.model = GNN(args, decoder_output_dim=1, name='EdgeGNN')  # Predict 0/1 Label for mesh edge classification
+        self.env = env
+        self.model = GNN(args.model, decoder_output_dim=1, name='EdgeGNN')  # Predict 0/1 Label for mesh edge classification
         self.device = torch.device(self.args.cuda_idx)
         self.model.to(self.device)
         self.optim = torch.optim.Adam(self.model.param(), lr=args.lr, betas=(args.beta1, 0.999))
@@ -32,7 +34,7 @@ class Edge(object):
         if self.args.edge_model_path is not None:
             self.load_model(self.args.load_optim)
 
-        self.datasets = {phase: ClothDatasetPointCloudEdge(args, 'vsbl', phase, env) for phase in ['train', 'valid']}
+        self.datasets = {phase: ClothDatasetPointCloudEdge(args.dataset, 'vsbl', phase, env, 'vsbl') for phase in ['train', 'valid']}
         follow_batch = 'x_'
         self.dataloaders = {
             x: torch_geometric.data.DataLoader(
@@ -46,16 +48,17 @@ class Edge(object):
         self.bce_logit_loss = nn.BCEWithLogitsLoss()
         self.load_epoch = 0
 
-    def generate_dataset(self):
-        os.system('mkdir -p ' + self.args.dataf)
-        for phase in ['train', 'valid']:
-            self.datasets[phase].generate_dataset()
-        print('Dataset generated in', self.args.dataf)
+        if self.args.use_wandb and args.eval == 0:
+            # To use wandb, you need to create an account and run 'wandb login'.
+            wandb.init(project='DIA', entity='yanglh14', name=args.exp_name, resume='allow',
+                       id=None, settings=wandb.Settings(start_method='thread'))
+            print('Weights & Biases is initialized with run name {}'.format(args.exp_name))
+            wandb.config.update(args, allow_val_change=True)
 
     def plot(self, phase, epoch, i):
-        data_folder = osp.join(self.args.dataf, phase)
+        data_folder = osp.join(self.args.dataset.dataf, phase)
         traj_ids = np.random.randint(0, len(os.listdir(data_folder)), self.args.plot_num)
-        step_ids = np.random.randint(self.args.n_his, self.args.time_step - self.args.n_his, self.args.plot_num)
+        step_ids = np.random.randint(self.args.dataset.n_his, self.args.dataset.time_step - self.args.dataset.n_his, self.args.plot_num)
         pred_accs, pred_mesh_edges, gt_mesh_edges, edges, positionss, rgbs = [], [], [], [], [], []
         for idx, (traj_id, step_id) in enumerate(zip(traj_ids, step_ids)):
             pred_mesh_edge, gt_mesh_edge, edge, positions, rgb = self.load_data_and_predict(traj_id, step_id, self.datasets[phase])
@@ -145,7 +148,7 @@ class Edge(object):
                 for i, data in tqdm(enumerate(self.dataloaders[phase]), desc=f'Epoch {epoch}, phase {phase}'):
                     data = data.to(self.device).to_dict()
                     iter_info = AggDict(is_detach=False)
-                    last_global = torch.zeros(self.args.batch_size, self.args.global_size, dtype=torch.float32, device=self.device)
+                    last_global = torch.zeros(self.args.batch_size, self.args.model.global_size, dtype=torch.float32, device=self.device)
                     with torch.set_grad_enabled(phase == 'train'):
                         data['u'] = last_global
                         pred_mesh_edge = self.model(data)
@@ -192,11 +195,13 @@ class Edge(object):
                             json.dump(state_dict, f, indent=2, sort_keys=True)
                         self.model.save_model(self.log_dir, 'vsbl', 'best', self.optim)
 
+                if self.args.use_wandb and self.args.eval == 0:
+                    wandb.log(epoch_info, step=epoch)
+
     def load_data_and_predict(self, rollout_idx, timestep, dataset):
-        args = self.args
         self.set_mode('eval')
 
-        idx = rollout_idx * (self.args.time_step - self.args.n_his) + timestep
+        idx = rollout_idx * (self.args.dataset.time_step - self.args.dataset.n_his) + timestep
         data_ori = dataset._prepare_transition(idx)
         data = dataset.build_graph(data_ori)
 
@@ -204,7 +209,7 @@ class Edge(object):
 
         with torch.no_grad():
             data['x_batch'] = torch.zeros(data['x'].size(0), dtype=torch.long, device=self.device)
-            data['u'] = torch.zeros([1, self.args.global_size], device=self.device)
+            data['u'] = torch.zeros([1, self.args.model.global_size], device=self.device)
             for key in ['x', 'edge_index', 'edge_attr']:
                 data[key] = data[key].to(self.device)
             pred_mesh_edge = self.model(data)['mesh_edge']  
@@ -241,7 +246,7 @@ class Edge(object):
         data = edge_dataset.build_graph(data_ori, get_gt_edge_label=False)
         with torch.no_grad():
             data['x_batch'] = torch.zeros(data['x'].size(0), dtype=torch.long, device=self.device)
-            data['u'] = torch.zeros([1, self.args.global_size], device=self.device)
+            data['u'] = torch.zeros([1, self.args.model.global_size], device=self.device)
             for key in ['x', 'edge_index', 'edge_attr']:
                 data[key] = data[key].to(self.device)
             pred_mesh_edge_logits = self.model(data)['mesh_edge']  

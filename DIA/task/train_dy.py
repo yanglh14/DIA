@@ -6,7 +6,7 @@ from DIA.utils.env_utils import create_env
 import json
 import os.path as osp
 
-def train(args):
+def train_dy(args):
 
     if args.local:
         env = create_env(args.env)

@@ -4,7 +4,6 @@ import cv2
 import torch
 from torchvision.utils import make_grid
 from VCD.utils.camera_utils import project_to_image
-import pyflex
 import re
 import h5py
 import os
@@ -291,6 +290,7 @@ def draw_cem_elites(obs_, start_poses, end_poses, mean_start_pos, mean_end_pos,
 
 
 def set_shape_pos(pos):
+    import pyflex
     shape_states = np.array(pyflex.get_shape_states()).reshape(-1, 14)
     shape_states[:2, 3:6] = pos.reshape(-1, 3)
     shape_states[:2, :3] = pos.reshape(-1, 3)
@@ -298,6 +298,7 @@ def set_shape_pos(pos):
 
 
 def visualize(env, particle_positions, shape_positions, config_id, sample_idx=None, picked_particles=None, show=False):
+    import pyflex
     """ Render point cloud trajectory without running the simulation dynamics"""
     env.reset(config_id=config_id)
     # env.update_camera('obs_camera', {'pos': np.array([1.2,0.3, 0]),
@@ -418,6 +419,7 @@ def configure_seed(seed):
 
 ############### for planning ###############################
 def set_picker_pos(pos):
+    import pyflex
     shape_states = pyflex.get_shape_states().reshape((-1, 14))
     shape_states[1, :3] = -1
     shape_states[1, 3:6] = -1
