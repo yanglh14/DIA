@@ -294,7 +294,7 @@ class GNN(torch.nn.Module):
         if self.name == 'EdgeGNN':
             out['mesh_edge'] = self.dyn_models['decoder'](e_nxt)
         else:
-            out['accel'] = self.dyn_models['decoder'](n_nxt)
+            out['pred'] = self.dyn_models['decoder'](n_nxt)
             if self.use_reward:
                 out['reward_nxt'] = self.dyn_models['reward_model'](n_nxt, lat_nxt, batch=data['x_batch'])
 

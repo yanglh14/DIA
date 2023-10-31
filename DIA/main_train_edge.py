@@ -2,8 +2,8 @@ import argparse
 from chester import logger
 import json
 import os.path as osp
-from DIA.edge import Edge
-from DIA.main import create_env
+from DIA.module.edge import Edge
+from DIA.main_o import create_env
 from DIA.utils.utils import configure_logger, configure_seed
 
 

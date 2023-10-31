@@ -5,7 +5,8 @@ import json
 from chester import logger
 
 from DIA.utils.utils import set_resource, configure_logger, configure_seed, vv_to_args
-from DIA.adaptation_model import AdaptationModel
+from DIA.module.dynamics import DynamicIA
+from DIA.module.edge import Edge
 
 def get_default_args():
     parser = argparse.ArgumentParser()
@@ -21,6 +22,10 @@ def get_default_args():
     parser.add_argument('--particle_radius', type=float, default=0.00625, help='Particle radius for the cloth')
     ## pyflex shape state
     parser.add_argument('--shape_state_dim', type=int, default=14, help="[xyz, xyz_last, quat(4), quat_last(4)]")
+    parser.add_argument('--shape_type', type=str, default='None', help="Any other shape except picker: [platform, sphere, rod]")
+    parser.add_argument('--vary_cloth_size', type=bool, default=False, help="Whether to vary the size of the cloth")
+    parser.add_argument('--vary_stiffness', type=bool, default=False, help="Whether to vary the stiffness of the cloth")
+    parser.add_argument('--vary_orientation', type=bool, default=True, help="Whether to vary the target orientation of the cloth")
 
     #Dataset
     parser.add_argument('--n_rollout', type=int, default=2000, help='Number of training trajectories')
@@ -32,9 +37,9 @@ def get_default_args():
     parser.add_argument('--gen_data', type=int, default=0, help='Whether to generate dataset')
     parser.add_argument('--gen_gif', type=int, default=0, help='Whether to also save gif of each trajectory (for debugging)')
     parser.add_argument('--collect_data_delta_move_min', type=float, default=0.0)
-    parser.add_argument('--collect_data_delta_move_max', type=float, default=0.1) # 0.1 for acc control and 0.03 for vel control
-    parser.add_argument('--collect_data_delta_acc_min', type=float, default=-0.5)
-    parser.add_argument('--collect_data_delta_acc_max', type=float, default=1.0) # 0.1 for acc control and 0.03 for vel control
+    parser.add_argument('--collect_data_delta_move_max', type=float, default=0.1)
+    parser.add_argument('--collect_data_delta_acc_min', type=float, default=-2)
+    parser.add_argument('--collect_data_delta_acc_max', type=float, default=2)
 
     # Model
     parser.add_argument('--global_size', type=int, default=128, help="Number of hidden nodes for global in GNN")
@@ -109,6 +114,10 @@ def create_env(args):
     env_args['picker_radius'] = 0.01
     env_args['picker_threshold'] = 0.00625*100
     env_args['action_repeat'] = 1
+    env_args['shape_type'] = args.shape_type
+    env_args['vary_cloth_size'] = args.vary_cloth_size
+    env_args['vary_stiffness'] = args.vary_stiffness
+    env_args['vary_orientation'] = args.vary_orientation
 
     if args.partial_observable and args.gen_data:
         env_args['observation_mode'] = 'cam_rgb'
@@ -125,9 +134,21 @@ def main():
     with open(osp.join(logger.get_dir(), 'variant.json'), 'w') as f:
         json.dump(args.__dict__, f, indent=2, sort_keys=True)
 
+    # load vcd_edge
+    if args.edge_model_path is not None:
+        edge_model_vv = json.load(open(osp.join(args.edge_model_path, 'variant.json')))
+        edge_model_args = vv_to_args(edge_model_vv)
+        dia_edge = Edge(edge_model_args, env=env)
+        dia_edge.load_model(args.edge_model_path)
+        print('EdgeGNN successfully loaded from ', args.edge_model_path, flush=True)
+    else:
+        dia_edge = None
 
-    adaptation_model = AdaptationModel(args, env)
+    dynamic_model = DynamicIA(args, env, dia_edge)
 
-    AdaptationModel.train()
+    if args.gen_data:
+        dynamic_model.generate_dataset()
+    else:
+        dynamic_model.train()
 if __name__ == '__main__':
     main()
