@@ -13,17 +13,15 @@ from omegaconf import OmegaConf
 import torch
 import torch_geometric
 
-from softgym.utils.visualization import save_numpy_as_gif
-
 from DIA.module.models import GNN
 from DIA.module.dataset import ClothDataset
 from DIA.utils.data_utils import AggDict
-from DIA.utils.utils import extract_numbers, pc_reward_model, visualize, cloth_drop_reward_fuc
+from DIA.utils.utils import extract_numbers, pc_reward_model, visualize, cloth_drop_reward_fuc, save_numpy_as_gif
 from DIA.utils.camera_utils import get_matrix_world_to_camera, project_to_image
 
 
 class DynamicIA(object):
-    def __init__(self, args, env, vcd_edge=None):
+    def __init__(self, args, env, edge=None):
         # Create Models
         self.args = args
         self.env = env
@@ -40,7 +38,7 @@ class DynamicIA(object):
                                                                             patience=3, verbose=True)
             self.models[m].to(self.device)
 
-        self.vcd_edge = vcd_edge
+        self.edge = edge
         self.load_model(self.args.load_optim)
 
         print("DIA dynamics models created")
@@ -49,7 +47,7 @@ class DynamicIA(object):
 
         # Create Dataloaders
         self.datasets = {phase: ClothDataset(args.dataset, self.input_types, phase, env, self.train_mode) for phase in ['train', 'valid']}
-        for phase in ['train', 'valid']: self.datasets[phase].vcd_edge = self.vcd_edge
+        for phase in ['train', 'valid']: self.datasets[phase].edge = self.edge
 
         follow_batch = ['x_{}'.format(t) for t in self.input_types]
         self.dataloaders = {x: torch_geometric.data.DataLoader(
@@ -346,11 +344,11 @@ class DynamicIA(object):
         pred_rewards = np.zeros(H)
         gt_pos_rewards = np.zeros(H)
 
-        # Todo: seems like the mesh edges are not used if no vcd edge?
+
         # Predict mesh during evaluation and use gt edges during training
-        if self.vcd_edge is not None and mesh_edges is None:
+        if self.edge is not None and mesh_edges is None:
             model_input_data['cuda_idx'] = cuda_idx
-            mesh_edges = self.vcd_edge.infer_mesh_edges(model_input_data)
+            mesh_edges = self.edge.infer_mesh_edges(model_input_data)
 
         # for ablation that uses first-time step collision edges as the mesh edges
         if self.args.use_collision_as_mesh_edge:
@@ -372,7 +370,7 @@ class DynamicIA(object):
                     'mesh_edges': mesh_edges,
                     'rest_dist': rest_dist,
                     'initial_particle_pos': initial_pc_pos}
-            if self.args.dataset.env_shape is not None:
+            if self.args.env.env_shape is not None:
                 data['shape_size'] = model_input_data['shape_size']
                 data['shape_pos'] = model_input_data['shape_pos']
                 data['shape_quat'] = model_input_data['shape_quat']
@@ -408,7 +406,7 @@ class DynamicIA(object):
                                                                graph_data['picked_status'],
                                                                graph_data['picked_particles'], model_input_data)
             if 'target_pos' in model_input_data and model_input_data['target_pos'] is not None:
-                reward = reward_model(pc_pos,model_input_data['target_pos'][model_input_data['downsample_idx']][model_input_data['partial_pc_mapped_idx']])
+                reward = reward_model(pc_pos, model_input_data['target_pos'][model_input_data['downsample_idx']][model_input_data['partial_pc_mapped_idx']])
             else:
                 reward = 0
             ret += reward
@@ -421,12 +419,24 @@ class DynamicIA(object):
 
         if mesh_edges is None:  # No mesh edges input during training
             mesh_edges = data['mesh_edges']  # This is modified inside prepare_transition function
+
+        data = {'pointcloud': pc_pos,
+                'vel_his': pc_vel_his,
+                'picker_position': picker_pos,
+                'action': actions[t],
+                # 'picked_points': picked_particles,
+                'scene_params': scene_params,
+                'partial_pc_mapped_idx': observable_particle_index if not robot_exp else range(len(pc_pos)),
+                'mesh_edges': mesh_edges,
+                'rest_dist': rest_dist,
+                'initial_particle_pos': initial_pc_pos}
+
         return dict(final_ret=final_ret,
                     model_positions=model_positions,
                     shape_positions=shape_positions,
                     mesh_edges=mesh_edges,
                     pred_rewards=pred_rewards,
-                    gt_pos_rewards=gt_pos_rewards)
+                    gt_pos_rewards=gt_pos_rewards), data
 
     def update_graph(self, pred_, pc_pos, velocity_his, picked_status, picked_particles,model_input_data):
         """ Euler integration"""
@@ -444,7 +454,12 @@ class DynamicIA(object):
         pc_pos[:, 1] = np.maximum(pc_pos[:, 1], self.args.dataset.particle_radius)  # z should be non-negative
 
         if self.args.dataset.env_shape is not None:
-            raise NotImplementedError
+            if self.args.dataset.env_shape == 'platform':
+                pc_pos_ = abs(pc_pos - model_input_data['shape_pos']) - model_input_data['shape_size']
+                # check pc_pos_ < 0: if true, then the particle is inside the box, and should be moved up outside
+                for i in range(pc_pos_.shape[0]):
+                    if pc_pos_[i, 0] < 0 and pc_pos_[i, 1] < 0 and pc_pos_[i, 2] < 0:
+                        pc_pos[i, 1] = model_input_data['shape_size'][1] + self.args.env.particle_radius
 
         # udpate position and velocity from the model prediction
         velocity_his = np.hstack([velocity_his[:, 3:], pred_vel])
@@ -469,3 +484,4 @@ class DynamicIA(object):
     def to(self, cuda_idx):
         for model in self.models.values():
             model.to(torch.device("cuda:{}".format(cuda_idx)))
+

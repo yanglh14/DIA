@@ -19,7 +19,7 @@ env:
   shape_state_dim: 14 # Dimension of the shape state [xyz, xyz_last, quat(4), quat_last(4)]
   vary_cloth_size: false # Whether to vary the size of the cloth
   vary_stiffness: false # Whether to vary the stiffness of the cloth
-  vary_orientation: true # Whether to vary the target orientation of the cloth
+  vary_orientation: false # Whether to vary the target orientation of the cloth
   picker_threshold: 0.625
   picker_radius: 0.01
 
@@ -53,6 +53,10 @@ gen_data:
   dataset: ${dataset}
   env: ${env}
 
+task_specific_parameters:
+  train_dy:
+    render_mode: particle
+
 ### Train Dynamic Model ###
 train_dy:
   exp_name: ${exp_name}
@@ -70,7 +74,7 @@ train_dy:
   nstep_eval_rollout: 20 # Number of rollouts to evaluate
   save_model_interval: 5 # Interval to save model
   use_wandb: 0 # Whether to use wandb
-  local: false # Whether train local or remote
+  local: true # Whether train local or remote
   output_type: 'vel' # vel or accel
 
   ### Resume training ###
@@ -106,6 +110,7 @@ train_dy:
   env:
     ${env}
 
+
 train_edge:
   exp_name: ${exp_name}
 
@@ -120,7 +125,7 @@ train_edge:
   save_model_interval: 5 # Interval to save model
   use_wandb: 0 # Whether to use wandb
   plot_num: 8 # Number of edge prediction visuals to dump per training epoch
-  local: false # Whether train local or remote
+  local: true # Whether train local or remote
 
   ### Resume training ###
   edge_model_path: null
@@ -132,6 +137,31 @@ train_edge:
     proc_layer: 10 # Number of propagation layers
     state_dim: 3 # Dim of node feature input. Computed based on n_his: 3 x 5 + 1 dist to ground + 2 one-hot encoding of picked particle
     relation_dim: 4 # Dim of edge feature input
+
+  dataset:
+    ${dataset}
+  env:
+    ${env}
+
+plan:
+  ### Planning ###
+  shooting_number: 5
+  num_worker: 0
+  configurations: 5
+  sequence_steps: 20
+
+  cuda_idx: 0 # Cuda index
+  sensor_noise: 0
+  gpu_num: 1
+
+  ### Load Models ###
+  edge_model_path: null
+  partial_dyn_path: null
+  load_optim: false
+
+  ### For ablation ###
+  fix_collision_edge: false
+  use_collision_as_mesh_edge: false
 
   dataset:
     ${dataset}

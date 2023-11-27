@@ -3,14 +3,15 @@ import numpy as np
 import cv2
 import torch
 from torchvision.utils import make_grid
-from VCD.utils.camera_utils import project_to_image
+from DIA.utils.camera_utils import project_to_image
 import re
 import h5py
 import os
-from softgym.utils.visualization import save_numpy_as_gif
+from moviepy.editor import ImageSequenceClip
 from chester import logger
 import random
 
+from scipy.spatial import cKDTree
 
 class VArgs(object):
     def __init__(self, vv):
@@ -19,6 +20,10 @@ class VArgs(object):
 
 
 def vv_to_args(vv):
+    for key, val in vv.items():
+        if isinstance(val, dict):
+            vv[key] = vv_to_args(val)
+
     args = VArgs(vv)
     return args
 
@@ -40,6 +45,7 @@ import pcl
 
 
 def voxelize_pointcloud(pointcloud, voxel_size):
+    import pcl
     cloud = pcl.PointCloud(pointcloud)
     sor = cloud.make_voxel_grid_filter()
     sor.set_leaf_size(voxel_size, voxel_size, voxel_size)
@@ -47,9 +53,37 @@ def voxelize_pointcloud(pointcloud, voxel_size):
     pointcloud = np.asarray(pointcloud).astype(np.float32)
     return pointcloud
 
+def voxelize_pointcloud_sp(pointcloud, voxel_size):
+    # Compute voxel coordinates
+    voxel_coords = np.floor(pointcloud / voxel_size).astype(int)
 
-from softgym.utils.misc import vectorized_range, vectorized_meshgrid
+    # Identify unique voxels and count the number of points in each voxel
+    unique_voxels, counts = np.unique(voxel_coords, axis=0, return_counts=True)
 
+    # Compute the centroid of each voxel by querying the nearest neighbors within the voxel
+    tree = cKDTree(pointcloud)
+    voxel_centroids = []
+    for voxel in unique_voxels:
+        indices = tree.query_ball_point(voxel * voxel_size, r=voxel_size)
+        voxel_centroids.append(np.mean(pointcloud[indices], axis=0))
+
+    voxel_centroids = np.array(voxel_centroids).astype(np.float32)
+
+    return voxel_centroids
+
+def vectorized_range(start, end):
+    """  Return an array of NxD, iterating from the start to the end"""
+    N = int(np.max(end - start)) + 1
+    idxes = np.floor(np.arange(N) * (end - start)[:, None] / N + start[:, None]).astype('int')
+    return idxes
+
+
+def vectorized_meshgrid(vec_x, vec_y):
+    """vec_x in NxK, vec_y in NxD. Return xx in Nx(KxD) and yy in Nx(DxK)"""
+    N, K, D = vec_x.shape[0], vec_x.shape[1], vec_y.shape[1]
+    vec_x = np.tile(vec_x[:, None, :], [1, D, 1]).reshape(N, -1)
+    vec_y = np.tile(vec_y[:, :, None], [1, 1, K]).reshape(N, -1)
+    return vec_x, vec_y
 
 def pc_reward_model(pos, cloth_particle_radius=0.00625, downsample_scale=3):
     cloth_particle_radius *= downsample_scale
@@ -210,6 +244,40 @@ def cem_make_gif(all_frames, save_dir, save_name):
     grid_imgs = [make_grid(torch.from_numpy(frame), nrow=5).permute(1, 2, 0).data.cpu().numpy() for frame in all_frames]
     save_numpy_as_gif(np.array(grid_imgs), osp.join(save_dir, save_name))
 
+def save_numpy_as_gif(array, filename, fps=20, scale=1.0):
+    """Creates a gif given a stack of images using moviepy
+    Notes
+    -----
+    works with current Github version of moviepy (not the pip version)
+    https://github.com/Zulko/moviepy/commit/d4c9c37bc88261d8ed8b5d9b7c317d13b2cdf62e
+    Usage
+    -----
+    >>> X = randn(100, 64, 64)
+    >>> gif('test.gif', X)
+    Parameters
+    ----------
+    filename : string
+        The filename of the gif to write to
+    array : array_like
+        A numpy array that contains a sequence of images
+    fps : int
+        frames per second (default: 10)
+    scale : float
+        how much to rescale each image by (default: 1.0)
+    """
+
+    # ensure that the file has the .gif extension
+    fname, _ = os.path.splitext(filename)
+    filename = fname + '.gif'
+
+    # copy into the color dimension if the images are black and white
+    if array.ndim == 3:
+        array = array[..., np.newaxis] * np.ones(3)
+
+    # make the moviepy clip
+    clip = ImageSequenceClip(list(array), fps=fps).resize(scale)
+    clip.write_gif(filename, fps=fps)
+    return clip
 
 def draw_policy_action(obs_before, obs_after, start_loc_1, end_loc_1, matrix_world_to_camera, start_loc_2=None, end_loc_2=None):
     height, width, _ = obs_before.shape
@@ -434,3 +502,22 @@ def set_resource():
     import resource
     rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
     resource.setrlimit(resource.RLIMIT_NOFILE, (4096, rlimit[1]))
+
+if __name__ == '__main__':
+    import time
+    point_cloud = np.random.randn(500, 3).astype(np.float32)
+
+    # compare computation time for two fuction
+    start_time = time.time()
+    voxelized_pc_sp = voxelize_pointcloud_sp(point_cloud, 0.1)
+    cost_time_sp = time.time() - start_time
+
+    start_time = time.time()
+    voxelized_pc = voxelize_pointcloud(point_cloud, 0.1)
+    cost_time = time.time() - start_time
+
+    print('cost time for voxelize_pointcloud_sp: ', cost_time_sp)
+    print('cost time for voxelize_pointcloud: ', cost_time)
+    assert np.allclose(voxelized_pc_sp, voxelized_pc)
+    print('voxelized_pc_sp.shape: ', voxelized_pc_sp.shape)
+    print('voxelized_pc.shape: ', voxelized_pc.shape)

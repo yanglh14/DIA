@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import wandb
+from omegaconf import OmegaConf
 
 import os.path as osp
 
@@ -188,7 +189,7 @@ class Edge(object):
                     self.scheduler.step(cur_loss)
                     if (cur_loss < best_valid_loss):
                         best_valid_loss = cur_loss
-                        state_dict = self.args.__dict__
+                        state_dict = OmegaConf.to_container(self.args, resolve=True)
                         state_dict['best_epoch'] = epoch
                         state_dict['best_valid_loss'] = cur_loss
                         with open(osp.join(self.log_dir, 'best_state.json'), 'w') as f:

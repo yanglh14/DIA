@@ -1,5 +1,5 @@
 <component name="ProjectRunConfigurationManager">
-  <configuration default="false" name="gen_data" type="PythonConfigurationType" factoryName="Python" folderName="tasks" singleton="false">
+  <configuration default="false" name="gen_data" type="PythonConfigurationType" factoryName="Python" folderName="tasks_s1" singleton="false">
     <module name="DIA" />
     <option name="INTERPRETER_OPTIONS" value="" />
     <option name="PARENT_ENVS" value="true" />
@@ -12,7 +12,7 @@
     <option name="ADD_CONTENT_ROOTS" value="true" />
     <option name="ADD_SOURCE_ROOTS" value="true" />
     <option name="SCRIPT_NAME" value="$PROJECT_DIR$/DIA/main.py" />
-    <option name="PARAMETERS" value="exp_name=dia_data_v2 task=gen_data dataset.dataf=./data/dia_data_v2 log_dir=./data/dia_data_v2 dataset.gen_gif=1 dataset.n_rollout=20" />
+    <option name="PARAMETERS" value="exp_name=dia_data_v2 task=gen_data dataset.dataf=./data/dia_v2 log_dir=./data/dia_v2 dataset.gen_gif=0 dataset.n_rollout=500" />
     <option name="SHOW_COMMAND_LINE" value="false" />
     <option name="EMULATE_TERMINAL" value="false" />
     <option name="MODULE_MODE" value="false" />

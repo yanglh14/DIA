@@ -1,5 +1,5 @@
 import numpy as np
-from DIA.module.planner import RandomShootingUVPickandPlacePlanner
+from DIA.module.planner import MPCPlanner
 from chester import logger
 import json
 import os.path as osp
@@ -200,7 +200,7 @@ def main(args):
     matrix_world_to_camera = get_matrix_world_to_camera(cam_angle=camera_angle, cam_pos=camera_pos)
 
     # build random shooting planner
-    planner = RandomShootingUVPickandPlacePlanner(
+    planner = MPCPlanner(
         args.shooting_number,
         dynamics=vcdynamics,
         reward_model=pc_reward_model,

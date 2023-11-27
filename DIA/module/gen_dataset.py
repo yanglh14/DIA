@@ -3,7 +3,7 @@ import numpy as np
 
 import pyflex
 
-from DIA.utils.utils import downsample, load_data, load_data_list, store_h5_data, voxelize_pointcloud, pc_reward_model, draw_target_pos
+from DIA.utils.utils import downsample, load_data, load_data_list, store_h5_data, pc_reward_model, draw_target_pos
 from DIA.utils.camera_utils import get_observable_particle_index, get_observable_particle_index_old, get_world_coords, get_observable_particle_index_3, get_matrix_world_to_camera
 from softgym.utils.visualization import save_numpy_as_gif
 

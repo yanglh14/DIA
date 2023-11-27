@@ -4,40 +4,69 @@ import copy
 from DIA.utils.camera_utils import project_to_image, get_target_pos
 
 
-class RandomShootingUVPickandPlacePlanner():
+class MPCPlanner():
 
-    def __init__(self, num_pick,
-                    dynamics, reward_model, num_worker=10, gpu_num=1,
-                    image_size=None, normalize_info=None,
+    def __init__(self,
+                    dynamics, reward_model, normalize_info=None,
                     matrix_world_to_camera=np.identity(4),
-                    use_pred_rwd=False,
-                    delta_acc_range=[0, 1], dt=0.01, env=None, args=None,control_sequence_num=20):
+                    use_pred_rwd=False, env=None, args=None):
         """
         Random Shooting planner.
         """
 
         self.normalize_info = normalize_info  # Used for robot experiments to denormalize before action clipping
-        self.num_pick = num_pick
+        self.shooting_number = args.shooting_number
         self.reward_model = reward_model
         self.dynamics = dynamics
-        self.gpu_num = gpu_num
+        self.gpu_num = args.gpu_num
         self.use_pred_rwd = use_pred_rwd
 
+        num_worker = args.num_worker
         if num_worker > 0:
             self.pool = pool.Pool(processes=num_worker)
+
         self.num_worker = num_worker
         self.matrix_world_to_camera = matrix_world_to_camera
-        self.image_size = image_size
+        self.image_size = (env.camera_height, env.camera_width)
 
-        self.delta_acc_range = delta_acc_range
-        self.dt = dt
+        self.dt = args.dataset.dt
         self.env = env
         self.args = args
-        self.control_sequence_num = control_sequence_num
-    def project_3d(self, pos):
-        return project_to_image(self.matrix_world_to_camera, pos, self.image_size[0], self.image_size[1])
+        self.sequence_steps = args.sequence_steps
+        self.pred_time_interval = args.dataset.pred_time_interval
 
-    def get_action(self, init_data, control_sequence_idx = 0,  robot_exp=False, m_name='vsbl'):
+    def init_traj(self, data, episode_idx, m_name='vsbl'):
+
+        picker_position = self.env.action_tool._get_pos()[0]
+        self.target_position = self.env.get_current_config()['target_picker_pos']
+        actions_sampled, step_mid_sampled, middle_state_sampled = [], [], []
+        for _ in range(10):
+            actions, step_mid, middle_state = _collect_trajectory((picker_position, self.target_position, self.dt, self.pred_time_interval, self.sequence_steps))
+            actions_sampled.append(actions)
+            step_mid_sampled.append(step_mid)
+            middle_state_sampled.append(middle_state)
+
+        data_cpy = copy.deepcopy(data)
+
+        returns, frames_var, frames_top_var = [], [], []
+        for i in range(len(actions_sampled)):
+
+            frames, frames_top, reward = rollout_gt(self.env, episode_idx, actions_sampled[i], self.pred_time_interval)
+            returns.append(reward)
+            frames_var.append(frames)
+            frames_top_var.append(frames_top)
+
+        highest_return_idx = np.argmax(returns)
+        self.actions = actions_sampled[highest_return_idx]
+        self.step_mid = step_mid_sampled[highest_return_idx]
+
+        # How to evaluate this middle state? add noise to the dynamics model..  or add noise to the action sequence?
+        return frames_var, frames_top_var, returns
+
+    def update_traj(self, actions, control_sequence_idx):
+        self.actions[control_sequence_idx:] = actions
+
+    def get_action(self, init_data, control_sequence_idx=0,  robot_exp=False, m_name='vsbl'):
         """
         check_mask: Used to filter out place points that are on the cloth.
         init_data should be a list that include:
@@ -46,47 +75,56 @@ class RandomShootingUVPickandPlacePlanner():
 
         """
         data = init_data.copy()
-        data['picked_points'] = [-1, -1]
 
-        # add a no-op action
-        sampling_num = self.num_pick
-        pointcloud = copy.deepcopy(data['pointcloud'])
+        # maybe stop here or continue?
 
         # paralleled version of generating action sequences
         if robot_exp:
-
             raise NotImplementedError
-
         else:  # simulation planning
-            if control_sequence_idx==0:
-                self.tool_state = np.zeros(6)
 
-            interval = (self.delta_acc_range[1]-self.delta_acc_range[0])/self.num_pick
-            sampling_noise = [self.delta_acc_range[0] + i * interval for i in range(self.num_pick)]
+            if control_sequence_idx < self.step_mid:
+                actions_swing = self.actions[control_sequence_idx:self.step_mid]
 
-            params = [
-                (control_sequence_idx, self.control_sequence_num, sampling_noise[i], self.dt, self.env, self.args.pred_time_interval, self.tool_state.copy())
-                for i in range(self.num_pick)
-            ]
+                ## add noise to actions_swing
+                noise_ratio = np.random.normal(0, 0.2, [self.shooting_number,3])
+                delta_action_list = [actions_swing[:, :3] * noise_ratio[i] for i in range(self.shooting_number)]
 
-            if self.num_worker > 0:
-                results = self.pool.map(_parallel_generate_actions_v4, params)
+                # extend one dimension
+                actions_swing = np.expand_dims(actions_swing, axis=0).repeat(self.shooting_number, axis=0)
+
+                for i in range(self.shooting_number):
+                    actions_swing[i,:,:3] = actions_swing[i,:,:3] + delta_action_list[i]
+                    actions_swing[i,:,4:7] = actions_swing[i,:,4:7] + delta_action_list[i]
+
+                assumed_mid_pos_1 = data['picker_position'][0] + np.sum(actions_swing[:,:, :3], axis=1)
+                assumed_mid_pos_2 = data['picker_position'][1] + np.sum(actions_swing[:,:, 4:7], axis=1)
+                assumed_mid_pos = np.concatenate((assumed_mid_pos_1, assumed_mid_pos_2), axis=1)
+
+                actions_pull_list = []
+                for i in range(self.shooting_number):
+                    traj_pull = _trajectory_generation(assumed_mid_pos[i].reshape(-1, 3), self.target_position,
+                                                          self.sequence_steps-self.step_mid, self.dt*self.pred_time_interval)
+
+                    actions_pull = []
+                    for step in range(self.sequence_steps-self.step_mid):
+                        action = np.ones(8, dtype=np.float32)
+                        action[:3], action[4:7] = traj_pull[step+1][0] - traj_pull[step][0], traj_pull[step+1][1] - traj_pull[step][1]
+                        actions_pull.append(action)
+
+                    actions_pull_list.append(actions_pull)
+                actions = np.concatenate((actions_swing, actions_pull_list), axis=1)
+
             else:
-                # results = [_parallel_generate_actions_v3(param) for param in params]
-                if self.args.shape_type == 'rod':
-                    results = [_parallel_generate_actions_rod(param) for param in params]
-                elif self.args.shape_type == 'sphere':
-                    results = [_parallel_generate_actions_sphere(param) for param in params]
-                elif self.args.shape_type == 'platform':
-                    results = [_parallel_generate_actions_v4_pick_drop(param) for param in params]
-            actions = np.array(results)
+                actions = self.actions[control_sequence_idx:]
+                actions = np.expand_dims(actions, axis=0).repeat(self.shooting_number, axis=0)
 
         # parallely rollout the dynamics model with the sampled action seqeunces
         data_cpy = copy.deepcopy(data)
         if self.num_worker > 0:
-            job_each_gpu = sampling_num // self.gpu_num
+            job_each_gpu = self.shooting_number // self.gpu_num
             params = []
-            for i in range(sampling_num):
+            for i in range(self.shooting_number):
 
                 gpu_id = i // job_each_gpu if i < self.gpu_num * job_each_gpu else i % self.gpu_num
                 params.append(
@@ -95,11 +133,11 @@ class RandomShootingUVPickandPlacePlanner():
                         reward_model=self.reward_model, cuda_idx=gpu_id, robot_exp=robot_exp,
                     )
                 )
-            results = self.pool.map(self.dynamics.rollout, params, chunksize=max(1, sampling_num // self.num_worker))
+            results = self.pool.map(self.dynamics.rollout, params, chunksize=max(1, self.shooting_number // self.num_worker))
             returns = [x['final_ret'] for x in results]
         else: # sequentially rollout each sampled action trajectory
             returns, results = [], []
-            for i in range(sampling_num):
+            for i in range(self.shooting_number):
                 assert actions[i].shape[-1] == 8
                 res = self.dynamics.rollout(
                     dict(
@@ -111,17 +149,19 @@ class RandomShootingUVPickandPlacePlanner():
 
         ret_info = {}
         highest_return_idx = np.argmax(returns)
-        self.tool_state[:3] = actions[highest_return_idx, 0, :3]
 
         ret_info['highest_return_idx'] = highest_return_idx
         ret_info['highest_return'] = returns[highest_return_idx]
         action_seq = actions[highest_return_idx]
 
-        model_predict_particle_positions = results[highest_return_idx]['model_positions']
+        model_predict_positions = results[highest_return_idx]['model_positions']
         model_predict_shape_positions = results[highest_return_idx]['shape_positions']
         predicted_edges = results[highest_return_idx]['mesh_edges']
         print('highest_return_idx', highest_return_idx)
-        return action_seq, model_predict_particle_positions, model_predict_shape_positions, ret_info, predicted_edges, results
+
+        self.update_traj(action_seq, control_sequence_idx=control_sequence_idx)
+
+        return action_seq, model_predict_positions, model_predict_shape_positions, ret_info, predicted_edges, results
 
 
 def pos_in_image(after_pos, matrix_world_to_camera, image_size):
@@ -132,170 +172,132 @@ def pos_in_image(after_pos, matrix_world_to_camera, image_size):
     else:
         return False
 
-def _parallel_generate_actions_v4(args):
-    # sample action for v4 pick and drop
-    control_sequence_idx, control_sequence_num, delta_acc_range, dt, env, pred_time_interval,state = args
-    acc_delta_value = np.random.uniform(
-        delta_acc_range[0],
-        delta_acc_range[1], size=control_sequence_num)
+def project_3d(self, pos):
+    return project_to_image(self.matrix_world_to_camera, pos, self.image_size[0], self.image_size[1])
+
+def _collect_trajectory(args):
+
+    """ Policy for collecting data - random sampling"""
+
+    current_picker_position, target_picker_position, dt, pred_time_interval, time_step = args
+
+    dt = dt * pred_time_interval
+
+    middle_position_step_ratio = np.random.uniform(0.3, 0.7)
+    middle_position_xy_translation = np.random.uniform(0.1, 0.3)
+    middle_position_z_ratio = np.random.uniform(0.2, 0.5)
+
+    norm_direction = np.array([target_picker_position[1, 2] - target_picker_position[0, 2],
+                               target_picker_position[0, 0] - target_picker_position[1, 0]]) / \
+                     np.linalg.norm(np.array([target_picker_position[1, 2] - target_picker_position[0, 2],
+                                              target_picker_position[0, 0] - target_picker_position[1, 0]]))
+    middle_state = target_picker_position.copy()
+    middle_state[:, [0, 2]] = target_picker_position[:, [0, 2]] + middle_position_xy_translation * norm_direction
+    middle_state[:, 1] = current_picker_position[:, 1] + middle_position_z_ratio * (
+                target_picker_position[:, 1] - current_picker_position[:, 1])
+
+    trajectory_start_to_middle = _trajectory_generation(current_picker_position, middle_state,
+                                                          int(time_step * middle_position_step_ratio), dt)
+
+    trajectory_middle_to_target = _trajectory_generation(middle_state, target_picker_position,
+                                                        time_step - int(
+                                                            time_step * middle_position_step_ratio), dt)
+
+    # cat trajectory_xy and trajectory_z
+    trajectory = np.concatenate((trajectory_start_to_middle, trajectory_middle_to_target[1:]), axis=0)
+    trajectory = trajectory.reshape(trajectory.shape[0], -1)
 
     action_list = []
-
-    for step in range(control_sequence_idx, control_sequence_num):
-
-        if step < control_sequence_num/ 4:
-            acc_direction = np.array([6, -1.6, 0], dtype=np.float32)
-
-        elif step < control_sequence_num / 2:
-            acc_direction = np.array([-6, -1.6, 0], dtype=np.float32)
-
-        elif step < control_sequence_num * 3 / 4:
-            acc_direction = np.array([-3, 1.6, 0], dtype=np.float32)
-
-        else:
-            acc_direction = np.array([3, 1.6, 0], dtype=np.float32)
-
-        acc_direction[0] = acc_direction[0] + acc_delta_value[step]
-
-        state[3:6] = acc_direction * dt * pred_time_interval
-
-        state[0:3] += state[3:6] * dt * pred_time_interval
-
-        action = np.zeros_like(env.action_space.sample())
-        action[:3], action[4:7] = state[0:3], state[0:3]
-        if not step > control_sequence_num * 0.75:
-            action[7], action[3] = 1, 1
-        else:
-            action[7], action[3] = 0, 0
+    for step in range(time_step):
+        action = np.ones(8, dtype=np.float32)
+        action[:3], action[4:7] = trajectory[step+1, :3] - trajectory[step , :3], trajectory[step+1,
+                                                                                   3:6] - trajectory[step , 3:6]
         action_list.append(action)
 
-    return action_list
+    return np.array(action_list), int(time_step * middle_position_step_ratio), middle_state
 
-def _parallel_generate_actions_v4_pick_drop(args):
-    # in this sampling, only first action change
-    control_sequence_idx, control_sequence_num, sampling_noise, dt, env, pred_time_interval,state = args
+def _trajectory_generation(current_picker_position, target_picker_position, time_steps, dt):
 
-    action_list = []
+    """ Policy for trajectory generation based on current and target_picker_position"""
 
-    for step in range(control_sequence_idx, control_sequence_num):
+    # select column 1 and 3 in current_picker_position and target_picker_position
+    initial_vertices_xy = current_picker_position[:, [0, 2]]
+    final_vertices_xy = target_picker_position[:, [0, 2]]
 
-        if step < control_sequence_num/ 4:
-            acc_direction = np.array([6, -1.6, 0], dtype=np.float32)
+    # calculate angle of rotation from initial to final segment in xy plane
+    angle = np.arctan2(final_vertices_xy[1, 1] - final_vertices_xy[0, 1],
+                       final_vertices_xy[1, 0] - final_vertices_xy[0, 0]) - \
+            np.arctan2(initial_vertices_xy[1, 1] - initial_vertices_xy[0, 1],
+                       initial_vertices_xy[1, 0] - initial_vertices_xy[0, 0])
 
-        elif step < control_sequence_num / 2:
-            acc_direction = np.array([-6, -1.6, 0], dtype=np.float32)
+    # number of steps
+    steps = time_steps
 
-        elif step < (control_sequence_num * 3 / 4) - control_sequence_num /8:
-            acc_direction = np.array([-5 - sampling_noise, 1.6, 0], dtype=np.float32)
+    # calculate angle of rotation for each step
+    rotation_angle = angle / steps
 
-        elif step < (control_sequence_num * 3 / 4):
-            acc_direction = np.array([7.5 - sampling_noise, 1.6, 0], dtype=np.float32)
+    # translation vector: difference between final and initial centers
+    translation = (target_picker_position.mean(axis=0) - current_picker_position.mean(axis=0))
 
-        # elif step < (control_sequence_num * 3 / 4):
-        #     acc_direction = np.array([-3, 1.6, 0], dtype=np.float32)
+    # calculate incremental translation
+    incremental_translation = [0, 0, 0]
 
+    # initialize list of vertex positions
+    positions_xzy = [current_picker_position]
+
+    # divide the steps into two parts
+    accelerate_steps = steps // 2
+    decelerate_steps = steps - accelerate_steps
+
+    v_max = translation * 2 / ((accelerate_steps + decelerate_steps) * dt)
+    acc_accelerate = v_max / (accelerate_steps * dt)
+    acc_decelerate = -v_max / (decelerate_steps * dt)
+
+    # apply translation and rotation in each step
+    for i in range(steps):
+        if i < accelerate_steps:
+            # Acceleration phase
+            incremental_translation = (np.divide(incremental_translation,
+                                                 dt) + acc_accelerate * dt) * dt
         else:
-            acc_direction = np.array([3, 1.6, 0], dtype=np.float32)
+            # Deceleration phase
+            incremental_translation = (np.divide(incremental_translation,
+                                                 dt) + acc_decelerate * dt) * dt
 
-        if step == control_sequence_idx:
-            acc_direction[0] = acc_direction[0] + sampling_noise
+        # translate vertices
+        vertices = positions_xzy[-1] + incremental_translation
 
-        state[3:6] = acc_direction * dt * pred_time_interval
+        # calculate rotation matrix for this step
+        rotation_matrix = np.array([[np.cos(rotation_angle), 0, -np.sin(rotation_angle)],
+                                    [0, 1, 0],
+                                    [np.sin(rotation_angle), 0, np.cos(rotation_angle)]])
 
-        state[0:3] += state[3:6] * dt * pred_time_interval
+        # rotate vertices
+        center = vertices.mean(axis=0)
+        vertices = (rotation_matrix @ (vertices - center).T).T + center
 
-        action = np.zeros_like(env.action_space.sample())
-        action[:3], action[4:7] = state[0:3], state[0:3]
-        action[7], action[3] = 1, 1
+        # append vertices to positions
+        positions_xzy.append(vertices)
 
-        if not step >= control_sequence_num * 0.75:
-            action[7], action[3] = 1, 1
-        else:
-            action[:]= 0
-        action_list.append(action)
+    return positions_xzy
 
-    return action_list
+def rollout_gt(env, episode_idx, actions, pred_time_interval):
+    # rollout the env in simulation
+    env.reset(config_id=episode_idx)
+    actions_executed = []
+    for action in actions:
+        action_sequence_small = np.zeros((pred_time_interval, 8))
+        action_sequence_small[:, :] = (action[:]) / pred_time_interval
 
-def _parallel_generate_actions_sphere(args):
-    """ sampling actions for sphere """
+        action_sequence_small[action_sequence_small[:, 3] > 0, 3] = 1
+        action_sequence_small[action_sequence_small[:, 7] > 0, 7] = 1
+        actions_executed.extend(action_sequence_small)
 
-    control_sequence_idx, control_sequence_num, sampling_noise, dt, env, pred_time_interval,state = args
+    frames, frames_top = [], []
+    for action in actions_executed:
+        _, reward, done, info = env.step(action, record_continuous_video=True, img_size=360)
 
-    action_list = []
+        frames.extend(info['flex_env_recorded_frames'])
+        frames_top.append(info['image_top'])
 
-    for step in range(control_sequence_idx, control_sequence_num):
-
-        if step <= control_sequence_num*0.8/ 4:
-            acc_direction = np.array([6, -1.6, 0], dtype=np.float32)
-
-        elif step <= control_sequence_num*0.8 / 2:
-            acc_direction = np.array([-6, -1.6, 0], dtype=np.float32)
-
-        elif step <= (control_sequence_num*0.8 * 3 / 4):
-            acc_direction = np.array([-3, 1.6, 0], dtype=np.float32)
-
-        elif step <= control_sequence_num*0.8:
-            acc_direction = np.array([3, 1.6, 0], dtype=np.float32)
-
-        else:
-            acc_direction = np.array([0, 0, 0], dtype=np.float32)
-
-        if step == control_sequence_idx:
-            acc_direction[0] = acc_direction[0] + sampling_noise
-
-        state[3:6] = acc_direction * dt * pred_time_interval
-
-        state[0:3] += state[3:6] * dt * pred_time_interval
-
-        action = np.zeros_like(env.action_space.sample())
-        action[:3], action[4:7] = state[0:3], state[0:3]
-
-        if not step >= control_sequence_num * 0.8* 3 / 4:
-            action[7], action[3] = 1, 1
-        else:
-            action[:]= 0
-        action_list.append(action)
-
-    return action_list
-
-def _parallel_generate_actions_rod(args):
-    """ sampling actions for rod """
-
-    control_sequence_idx, control_sequence_num, sampling_noise, dt, env, pred_time_interval,state = args
-
-    action_list = []
-
-    for step in range(control_sequence_idx, control_sequence_num):
-
-        if step <= control_sequence_num*0.8/ 4:
-            acc_direction = np.array([6, -1.6, 0], dtype=np.float32)
-
-        elif step <= control_sequence_num*0.8 / 2:
-            acc_direction = np.array([-6, -1.6, 0], dtype=np.float32)
-
-        elif step <= (control_sequence_num*0.8 * 3 / 4):
-            acc_direction = np.array([-3, 1.6, 0], dtype=np.float32)
-
-        elif step <= control_sequence_num*0.8:
-            acc_direction = np.array([3, 1.6, 0], dtype=np.float32)
-
-        else:
-            acc_direction = np.array([0, 0, 0], dtype=np.float32)
-
-        if step == control_sequence_idx:
-            acc_direction[0] = acc_direction[0] + sampling_noise
-
-        state[3:6] = acc_direction * dt * pred_time_interval
-
-        state[0:3] += state[3:6] * dt * pred_time_interval
-
-        action = np.zeros_like(env.action_space.sample())
-        action[:3], action[4:7] = state[0:3], state[0:3]
-
-        if not step >= control_sequence_num * 0.8:
-            action[7], action[3] = 1, 1
-        else:
-            action[:]= 0
-        action_list.append(action)
-
-    return action_list
+    return frames, frames_top, reward
