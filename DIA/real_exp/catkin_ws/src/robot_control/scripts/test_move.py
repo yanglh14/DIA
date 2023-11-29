@@ -131,8 +131,6 @@ class TrajectoryClient:
     """Small trajectory client to test a joint trajectory"""
 
     def __init__(self):
-        rospy.init_node("test_move")
-
         timeout = rospy.Duration(5)
         self.switch_srv = rospy.ServiceProxy(
             "controller_manager/switch_controller", SwitchController
@@ -149,13 +147,15 @@ class TrajectoryClient:
         self.cartesian_trajectory_controller = CARTESIAN_TRAJECTORY_CONTROLLERS[0]
 
         self.trajectory_log = []
+        self.pose_init = np.array([-0.4, -0.4, 0.366, 1, 0, 0, 0])
+        self.pose_end = np.array([-0.4, -0.5, 0.066, 1, 0, 0, 0])
 
-    def send_cartesian_trajectory(self):
-        """Creates a Cartesian trajectory and sends it using the selected action server"""
+    def move_to_init_pose(self):
+
         self.switch_controller(self.cartesian_trajectory_controller)
 
         # make sure the correct controller is loaded and activated
-        goal = FollowCartesianTrajectoryGoal()
+        self.goal = FollowCartesianTrajectoryGoal()
         trajectory_client = actionlib.SimpleActionClient(
             "{}/follow_cartesian_trajectory".format(self.cartesian_trajectory_controller),
             FollowCartesianTrajectoryAction,
@@ -167,65 +167,88 @@ class TrajectoryClient:
             rospy.logerr("Could not reach controller action server.")
             sys.exit(-1)
 
-        pose_init = np.array([-0.4, -0.54, 0.366, 0.707, 0.707, 0, 0])
+        # Create initial pose
+        point = CartesianTrajectoryPoint()
+        point.pose = geometry_msgs.Pose(
+            geometry_msgs.Vector3(self.pose_init[0], self.pose_init[1], self.pose_init[2]), geometry_msgs.Quaternion(self.pose_init[3], self.pose_init[4], self.pose_init[5], self.pose_init[6])
+        )
+        point.time_from_start = rospy.Duration(5.0)
+        self.goal.trajectory.points.append(point)
 
-        pose_list = [
-            geometry_msgs.Pose(
-                geometry_msgs.Vector3(pose_init[0], pose_init[1], pose_init[2]), geometry_msgs.Quaternion(pose_init[3], pose_init[4], pose_init[5], pose_init[6])
-            )
-        ]
-        duration_list = [5.0]
-        
-        pose_end = np.array([-0.3, -0.54, 0.066,0.707,0.707,0,0])
+
+        trajectory_client.send_goal(self.goal)
+        trajectory_client.wait_for_result()
+
+        result = trajectory_client.get_result()
+
+        rospy.loginfo("Initialization execution finished in state {}".format(result.error_code))
+
+    def send_cartesian_trajectory(self):
+        """Creates a Cartesian trajectory and sends it using the selected action server"""
+        self.switch_controller(self.cartesian_trajectory_controller)
+
+        # make sure the correct controller is loaded and activated
+        self.goal = FollowCartesianTrajectoryGoal()
+        trajectory_client = actionlib.SimpleActionClient(
+            "{}/follow_cartesian_trajectory".format(self.cartesian_trajectory_controller),
+            FollowCartesianTrajectoryAction,
+        )
+
+        # Wait for action server to be ready
+        timeout = rospy.Duration(5)
+        if not trajectory_client.wait_for_server(timeout):
+            rospy.logerr("Could not reach controller action server.")
+            sys.exit(-1)
 
         self.dt = 0.01
         self.time_step = 100
 
-        trajectory = self.collect_trajectory(pose_init, pose_end)
-        trajectory = (trajectory[:,:3] + trajectory[:,3:6])/2
-
-        trajectory[:,[1,2]] = trajectory[:,[2,1]]
+        trajectory = self.collect_trajectory(self.pose_init, self.pose_end)
         print(trajectory)
 
-        time_from_start = duration_list[0]
+        time_from_start = 0
+        self.pose_list = []
+        self.duration_list = []
+
         for pose in trajectory:
             time_from_start = time_from_start + self.dt
 
-            pose_list.append(
+            self.pose_list.append(
                 geometry_msgs.Pose(geometry_msgs.Vector3(pose[0], pose[1], pose[2]),
-                                   geometry_msgs.Quaternion(pose_init[3], pose_init[4], pose_init[5], pose_init[6])
+                                   geometry_msgs.Quaternion(self.pose_init[3], self.pose_init[4], self.pose_init[5], self.pose_init[6])
             ))
-            duration_list.append(time_from_start)
+            self.duration_list.append(time_from_start)
 
-        for i, pose in enumerate(pose_list):
+        for i, pose in enumerate(self.pose_list):
             point = CartesianTrajectoryPoint()
             point.pose = pose
-            point.time_from_start = rospy.Duration(duration_list[i])
-            goal.trajectory.points.append(point)
+            point.time_from_start = rospy.Duration(self.duration_list[i])
+            self.goal.trajectory.points.append(point)
 
             # logging
-            self.trajectory_log.append(np.array([duration_list[i], pose.position.x, pose.position.y, pose.position.z]))
-
-        self.ask_confirmation(pose_list)
+            self.trajectory_log.append(np.array([self.duration_list[i], pose.position.x, pose.position.y, pose.position.z]))
+            
+        self.ask_confirmation(self.pose_list)
         rospy.loginfo(
             "Executing trajectory using the {}".format(self.cartesian_trajectory_controller)
         )
-        trajectory_client.send_goal(goal)
+        trajectory_client.send_goal(self.goal)
         trajectory_client.wait_for_result()
 
         result = trajectory_client.get_result()
 
         rospy.loginfo("Trajectory execution finished in state {}".format(result.error_code))
 
+
     def collect_trajectory(self, pose_init, pose_end):
         """ Policy for collecting data - random sampling"""
 
-        current_picker_position = np.array([[pose_init[0], pose_init[2], pose_init[1]-0.1],[pose_init[0], pose_init[2], pose_init[1]+0.1]])
+        current_picker_position = np.array([[pose_init[1], pose_init[2], pose_init[0]-0.1],[pose_init[1], pose_init[2], pose_init[0]+0.1]])
 
-        target_picker_position = np.array([[pose_end[0], pose_end[2], pose_end[1]-0.1],[pose_end[0], pose_end[2], pose_end[1]+0.1]])
+        target_picker_position = np.array([[pose_end[1], pose_end[2], pose_end[0]-0.1],[pose_end[1], pose_end[2], pose_end[0]+0.1]])
 
         middle_position_step_ratio = np.random.uniform(0.3, 0.7)
-        middle_position_xy_translation = np.random.uniform(0.1, 0.3)
+        middle_position_xy_translation = np.random.uniform(0.1, 0.2)
         middle_position_z_ratio = np.random.uniform(0.2, 0.5)
 
         norm_direction = np.array([target_picker_position[1, 2] - target_picker_position[0, 2],
@@ -233,7 +256,7 @@ class TrajectoryClient:
                          np.linalg.norm(np.array([target_picker_position[1, 2] - target_picker_position[0, 2],
                                                   target_picker_position[0, 0] - target_picker_position[1, 0]]))
         middle_state = target_picker_position.copy()
-        middle_state[:, [0, 2]] = target_picker_position[:, [0, 2]] + middle_position_xy_translation * norm_direction
+        middle_state[:, [0, 2]] = target_picker_position[:, [0, 2]] + -middle_position_xy_translation * norm_direction
         middle_state[:, 1] = current_picker_position[:, 1] + middle_position_z_ratio * (
                     target_picker_position[:, 1] - current_picker_position[:, 1])
 
@@ -247,6 +270,10 @@ class TrajectoryClient:
         # cat trajectory_xy and trajectory_z
         trajectory = np.concatenate((trajectory_start_to_middle, trajectory_middle_to_target[1:]), axis=0)
         trajectory = trajectory.reshape(trajectory.shape[0], -1)
+
+        trajectory = (trajectory[:,:3] + trajectory[:,3:6])/2
+
+        trajectory[:,[0,1,2]] = trajectory[:,[2,0,1]]
 
         return trajectory
 
@@ -344,40 +371,6 @@ class TrajectoryClient:
             rospy.loginfo("Exiting as requested by user.")
             sys.exit(0)
 
-    def choose_controller(self):
-        """Ask the user to select the desired controller from the available list."""
-        rospy.loginfo("Available trajectory controllers:")
-        for (index, name) in enumerate(JOINT_TRAJECTORY_CONTROLLERS):
-            rospy.loginfo("{} (joint-based): {}".format(index, name))
-        for (index, name) in enumerate(CARTESIAN_TRAJECTORY_CONTROLLERS):
-            rospy.loginfo("{} (Cartesian): {}".format(index + len(JOINT_TRAJECTORY_CONTROLLERS), name))
-        choice = -1
-        while choice < 0:
-            input_str = input(
-                "Please choose a controller by entering its number (Enter '0' if "
-                "you are unsure / don't care): "
-            )
-            try:
-                choice = int(input_str)
-                if choice < 0 or choice >= len(JOINT_TRAJECTORY_CONTROLLERS) + len(
-                    CARTESIAN_TRAJECTORY_CONTROLLERS
-                ):
-                    rospy.loginfo(
-                        "{} not inside the list of options. "
-                        "Please enter a valid index from the list above.".format(choice)
-                    )
-                    choice = -1
-            except ValueError:
-                rospy.loginfo("Input is not a valid number. Please try again.")
-        if choice < len(JOINT_TRAJECTORY_CONTROLLERS):
-            self.joint_trajectory_controller = JOINT_TRAJECTORY_CONTROLLERS[choice]
-            return "joint_based"
-
-        self.cartesian_trajectory_controller = CARTESIAN_TRAJECTORY_CONTROLLERS[
-            choice - len(JOINT_TRAJECTORY_CONTROLLERS)
-        ]
-        return "cartesian"
-
     def switch_controller(self, target_controller):
         """Activates the desired controller and stops all others from the predefined list above"""
         other_controllers = (
@@ -406,28 +399,18 @@ class TrajectoryClient:
 
 
 if __name__ == "__main__":
-    client = TrajectoryClient()
 
-    # The controller choice is obviously not required to move the robot. It is a part of this demo
-    # script in order to show all available trajectory controllers.
     rospy.init_node("test_move")
+
+    client = TrajectoryClient()
+    client.move_to_init_pose()
+
     pose_cli = PoseClient()
     t = threading.Thread(target=pose_cli.run)
     t.daemon = True
     t.start()
 
     client.send_cartesian_trajectory()
-    # trajectory_type = client.choose_controller()
-    # if trajectory_type == "joint_based":
-    #     client.send_joint_trajectory()
-    # elif trajectory_type == "cartesian":
-    #     client.send_cartesian_trajectory()
-    # else:
-    #     raise ValueError(
-    #         "I only understand types 'joint_based' and 'cartesian', but got '{}'".format(
-    #             trajectory_type
-    #         )
-    #     )
 
     try:
         while t.is_alive():
@@ -435,7 +418,7 @@ if __name__ == "__main__":
             rospy.sleep(1)
         print("Thread finished task, exiting")
         # save log to file
-        np.save('move_log', pose_cli.pose_log)
-        np.save('trajectory_log', client.trajectory_log)
+        np.save('DIA/real_exp/catkin_ws/src/robot_control/results/traj_log', pose_cli.pose_log)
+        np.save('DIA/real_exp/catkin_ws/src/robot_control/results/traj_desired', client.trajectory_log)
     except KeyboardInterrupt:
         print("Exit")
