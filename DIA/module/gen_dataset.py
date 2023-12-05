@@ -85,13 +85,18 @@ class DataCollector(object):
                 # plot the picker position in 3 axis
                 picker_position_list = np.array(picker_position_list)
 
-                fig, (ax0, ax1, ax2) = plt.subplots(nrows=1, ncols=3, sharex=True,
-                                                    figsize=(12, 6))
+                # plot the picker position and vel in 3 axis
+
+                fig, ((ax0,ax1,ax2),(ax3,ax4,ax5)) = plt.subplots(nrows=2, ncols=3, sharex=True,figsize=(12, 6))
                 ax0.plot(picker_position_list[:, 0, 0])
                 ax1.plot(picker_position_list[:, 0, 1])
                 ax2.plot(picker_position_list[:, 0, 2])
+                ax3.plot(np.diff(np.diff(picker_position_list[:, 0, 0])/self.dt)/self.dt)
+                ax4.plot(np.diff(np.diff(picker_position_list[:, 0, 1])/self.dt)/self.dt)
+                ax5.plot(np.diff(np.diff(picker_position_list[:, 0, 2])/self.dt)/self.dt)
                 plt.savefig(os.path.join(rollout_dir, 'picker_position.png'))
                 plt.close(fig)
+
                 plt.plot(picker_position_list[:, 0, 0], picker_position_list[:, 0, 1])
                 plt.savefig(os.path.join(rollout_dir, 'X-Z.png'))
                 plt.close(fig)
@@ -158,7 +163,7 @@ class DataCollector(object):
         """ Policy for collecting data - random sampling"""
 
         middle_position_step_ratio = np.random.uniform(0.3, 0.7)
-        middle_position_xy_translation = np.random.uniform(0.1, 0.3)
+        middle_position_xy_translation = np.random.uniform(0.2, 0.6)
         middle_position_z_ratio = np.random.uniform(0.2, 0.5)
 
         norm_direction = np.array([target_picker_position[1, 2] - target_picker_position[0, 2],

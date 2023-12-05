@@ -8,12 +8,12 @@ task: 'train_dy' # Phase of the experiment. Should be in ['gen_data', 'train_dy'
 env:
   env_name: 'ClothDrop' # Environment name
   env_shape: null # Shape of the environment : [platform, sphere, rod]
-  render_mode: 'cloth'
+  render_mode: 'particle' # Rendering mode. Should be in ['particle', 'cloth']
   observation_mode: 'cam_rgb'
   num_picker: 2 # Number of pickers
   action_repeat: 1 # Number of action repeat
   cached_states_path: 'dia.pkl' # Path to cached states
-  num_variations: 100  # Number of variations of the environment
+  num_variations: 1000  # Number of variations of the environment
   partial_observable: true # Whether the environment is partially observable
   particle_radius: 0.00625 # Radius of the particles
   shape_state_dim: 14 # Dimension of the shape state [xyz, xyz_last, quat(4), quat_last(4)]
