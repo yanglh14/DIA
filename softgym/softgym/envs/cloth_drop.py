@@ -43,8 +43,8 @@ class ClothDropEnv(ClothEnv):
                 cloth_dimx, cloth_dimy = config['ClothSize']
 
             if self.vary_stiffness:
-                config['ClothStiff'] = [np.random.uniform(0.5, 1.0), np.random.uniform(0.5, 1.0),
-                                                np.random.uniform(0.5, 1.0)]
+                config['ClothStiff'] = [np.random.uniform(0.5, 2.0), np.random.uniform(0.5, 2.0),
+                                                np.random.uniform(0.5, 2.0)]
             self.set_scene(config)
             self.action_tool.reset([0., -1., 0.])
 
@@ -55,7 +55,7 @@ class ClothDropEnv(ClothEnv):
 
             config['env_shape'] = self.env_shape
             delta_x = np.random.uniform(0.1, 0.3)
-            if self.shape_type == 'platform':
+            if self.env_shape == 'platform':
 
                 box_size = np.array([0.20, 0.02, 0.20])
                 box_pos =  np.array([delta_x + cloth_dimx * self.cloth_particle_radius / 2, 0, 0])
@@ -75,7 +75,7 @@ class ClothDropEnv(ClothEnv):
                 config['shape_size'] = box_size
                 config['shape_quat'] = box_quat
 
-            elif self.shape_type == 'sphere':
+            elif self.env_shape == 'sphere':
                 sphere_radius = 0.08
                 sphere_position = np.array([0.25, 0.0, 0.0])
                 sphere_random_pos = self._add_sphere(sphere_radius=sphere_radius, sphere_position=sphere_position, sphere_quat= np.array([0., 0., 0., 1.]), random_pos=True)
@@ -87,7 +87,7 @@ class ClothDropEnv(ClothEnv):
                 config['shape_size'] = sphere_radius
                 config['shape_quat'] = np.array([sphere_random_pos, 0, 0])
 
-            elif self.shape_type == 'rod':
+            elif self.env_shape == 'rod':
                 rod_size = np.array([0.004, 0.004, 0.2])
                 rod_position = np.array([0.25, 0.1, 0.0])
                 rod_random_pos = self._add_rod(rod_size=rod_size, rod_position=rod_position, rod_quat= np.array([0., 0., 0., 1.]), random_pos=True)
@@ -231,8 +231,8 @@ class ClothDropEnv(ClothEnv):
             self.action_tool.set_picker_pos(picker_pos=drop_point_pos + np.array([0., picker_radius, 0.]))
             # self.action_tool.visualize_picker_boundary()
         if self.env_shape == 'platform':
-            self._add_box(box_size=self.current_config['box_size'],
-                                           box_pos=self.current_config['box_pos'], box_quat=self.current_config['box_quat'])
+            self._add_box(box_size=self.current_config['shape_size'],
+                                           box_pos=self.current_config['shape_pos'], box_quat=self.current_config['shape_quat'])
 
         if self.env_shape == 'sphere':
             sphere_radius = self.current_config['sphere_radius']
