@@ -11,8 +11,8 @@
     <option name="IS_MODULE_SDK" value="true" />
     <option name="ADD_CONTENT_ROOTS" value="true" />
     <option name="ADD_SOURCE_ROOTS" value="true" />
-    <option name="SCRIPT_NAME" value="$PROJECT_DIR$/DIA/main_o.py" />
-    <option name="PARAMETERS" value="--exp_name=dia_acc --dataf=./data/dia --log_dir=./data/dia/log_dy_acc --use_wandb=1 --eval=0 --cached_states_path=dia.pkl --time_step=100 --num_variations=100" />
+    <option name="SCRIPT_NAME" value="$PROJECT_DIR$/DIA/main.py" />
+    <option name="PARAMETERS" value="exp_name=dia" />
     <option name="SHOW_COMMAND_LINE" value="false" />
     <option name="EMULATE_TERMINAL" value="false" />
     <option name="MODULE_MODE" value="false" />

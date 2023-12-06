@@ -2,7 +2,7 @@
 exp_name: 'dia' # Experiment name
 log_dir: 'data/dia/log' # Directory to save logs
 seed: 0 # Random seed
-task: 'train_dy' # Phase of the experiment. Should be in ['gen_data', 'train_dy','train_edge', 'plan']
+task: 'gen_data' # Phase of the experiment. Should be in ['gen_data', 'train_dy','train_edge', 'plan']
 
 ### ENV ###
 env:

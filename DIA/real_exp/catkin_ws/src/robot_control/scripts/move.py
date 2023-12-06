@@ -41,24 +41,11 @@ from cartesian_control_msgs.msg import (
     FollowCartesianTrajectoryGoal,
     CartesianTrajectoryPoint,
 )
+from transforms3d.euler import quat2euler, euler2quat
 
 import tf
 import tf2_ros
 import numpy as np
-
-# Compatibility for python2 and python3
-if sys.version_info[0] < 3:
-    input = raw_input
-
-# If your robot description is created with a tf_prefix, those would have to be adapted
-JOINT_NAMES = [
-    "shoulder_pan_joint",
-    "shoulder_lift_joint",
-    "elbow_joint",
-    "wrist_1_joint",
-    "wrist_2_joint",
-    "wrist_3_joint",
-]
 
 # All of those controllers can be used to execute joint-based trajectories.
 # The scaled versions should be preferred over the non-scaled versions.
@@ -86,8 +73,6 @@ CONFLICTING_CONTROLLERS = ["joint_group_vel_controller", "twist_controller"]
 class PoseClient:
     def __init__(self) -> None:
         self.tf_listener = tf.TransformListener()
-        self.tf_broadcaster = tf.TransformBroadcaster()
-        self.tf_static_broadcaster = tf2_ros.StaticTransformBroadcaster()
         self.pub = rospy.Publisher('tool_pose', geometry_msgs.Pose, queue_size=10)
         self.pose_log = []
 
@@ -102,7 +87,6 @@ class PoseClient:
             return tr_target2source 
         except Exception as e:
             print(e)
-            tf_target2source = None
     
     def publish_tool_pose(self):
         tr_tool = self.get_tool_tf()
@@ -123,6 +107,7 @@ class PoseClient:
             while not rospy.is_shutdown():
                 self.publish_tool_pose()
                 rate.sleep()
+
         except rospy.ROSInterruptException:
             rospy.loginfo('Exit Pose Client')
 
@@ -147,8 +132,7 @@ class TrajectoryClient:
         self.cartesian_trajectory_controller = CARTESIAN_TRAJECTORY_CONTROLLERS[0]
 
         self.trajectory_log = []
-        self.pose_init = np.array([-0.4, -0.4, 0.366, 1, 0, 0, 0])
-        self.pose_end = np.array([-0.4, -0.5, 0.066, 1, 0, 0, 0])
+        self.pose_init = np.array([-0.5, -0.3, 0.5, 1, 0, 0, 0])
 
     def move_to_init_pose(self):
 
@@ -201,34 +185,34 @@ class TrajectoryClient:
             sys.exit(-1)
 
         self.dt = 0.01
-        self.time_step = 100
+        self.time_step = 150
+        self.acc_max = 1.5
 
-        trajectory = self.collect_trajectory(self.pose_init, self.pose_end)
-        print(trajectory)
+        trajectory = self.collect_trajectory_v2(self.pose_init,)
 
         time_from_start = 0
-        self.pose_list = []
-        self.duration_list = []
 
-        for pose in trajectory:
-            time_from_start = time_from_start + self.dt
+        for i, pose in enumerate(trajectory):
+            time_from_start += self.dt
 
-            self.pose_list.append(
-                geometry_msgs.Pose(geometry_msgs.Vector3(pose[0], pose[1], pose[2]),
-                                   geometry_msgs.Quaternion(self.pose_init[3], self.pose_init[4], self.pose_init[5], self.pose_init[6])
-            ))
-            self.duration_list.append(time_from_start)
+            # Create the Pose message
+            pose_msg = geometry_msgs.Pose(
+                geometry_msgs.Vector3(pose[0], pose[1], pose[2]),
+                geometry_msgs.Quaternion(pose[3], pose[4], pose[5], pose[6])
+            )
 
-        for i, pose in enumerate(self.pose_list):
+            # Create the CartesianTrajectoryPoint
             point = CartesianTrajectoryPoint()
-            point.pose = pose
-            point.time_from_start = rospy.Duration(self.duration_list[i])
+            point.pose = pose_msg
+            point.time_from_start = rospy.Duration(time_from_start)
+
+            # Add to the goal
             self.goal.trajectory.points.append(point)
 
-            # logging
-            self.trajectory_log.append(np.array([self.duration_list[i], pose.position.x, pose.position.y, pose.position.z]))
-            
-        self.ask_confirmation(self.pose_list)
+            # Log the pose and duration
+            self.trajectory_log.append(np.array([time_from_start, pose[0], pose[1], pose[2]]))
+
+        self.ask_confirmation(trajectory)
         rospy.loginfo(
             "Executing trajectory using the {}".format(self.cartesian_trajectory_controller)
         )
@@ -239,16 +223,90 @@ class TrajectoryClient:
 
         rospy.loginfo("Trajectory execution finished in state {}".format(result.error_code))
 
+        rospy.signal_shutdown("Task Done")
+
+    def collect_trajectory_v2(self, cur_pose):
+        """ Policy for collecting data - random sampling"""
+        """ Version 2 - fixed max acceleration and float time step"""
+
+        self.target_theta = np.random.uniform(-np.pi/6, np.pi/6)
+        self.target_theta = np.pi/6
+        bias = 0.1
+        target_pose = np.zeros(7)
+        target_pose[0] = cur_pose[0] + bias * np.sin(self.target_theta)
+        target_pose[1] = cur_pose[1] - bias * np.cos(self.target_theta)
+        target_pose[2] = 0.066
+        target_pose[3] = np.cos(self.target_theta/2)
+        target_pose[6] = np.sin(self.target_theta/2)
+
+        cur_rot = quat2euler(cur_pose[3:])
+        target_rot = quat2euler(target_pose[3:])[2] - cur_rot[2]
+
+        # middle state sampling
+
+        xy_translation = np.random.uniform(0.2, 0.4)
+        z_ratio = np.random.uniform(0.2, 0.5)
+
+        middle_pose = target_pose.copy()
+        middle_pose[0] = middle_pose[0] + xy_translation * np.sin(target_rot)
+        middle_pose[1] = middle_pose[1] - xy_translation * np.cos(target_rot)
+        middle_pose[2] = cur_pose[2] + z_ratio * (target_pose[2] - cur_pose[2])
+
+        trajectory_s2m = self._generate_trajectory(cur_pose, middle_pose, self.acc_max, self.dt)
+        trajectory_m2e = self._generate_trajectory(middle_pose, target_pose, 1, self.dt)
+
+        trajectory = np.concatenate((trajectory_s2m, trajectory_m2e[1:]), axis=0)
+
+        return trajectory
+
+    def _generate_trajectory(self, current_pos, target_pos, acc_max, dt):
+        translation = (target_pos[:3] - current_pos[:3])
+        rotation = np.array(quat2euler(target_pos[3:])) - np.array(quat2euler(current_pos[3:]))
+
+        # Calculate the number of time steps
+        _time_steps = max(np.sqrt(4 * np.abs(translation) / acc_max) / dt)
+        time_steps = np.ceil(_time_steps).max().astype(int)
+
+        rot_steps = rotation / time_steps
+
+        accel_steps = int(time_steps / 2)
+        decel_steps = time_steps - accel_steps
+
+        v_max = translation * 2 / (time_steps * dt)
+        accelerate = v_max / (accel_steps * dt)
+        decelerate = -v_max / (decel_steps * dt)
+
+        incremental_translation = [0, 0, 0]
+        positions_xyzq = [current_pos]
+        for i in range(time_steps):
+            if i < accel_steps:
+                # Acceleration phase
+                incremental_translation = (np.divide(incremental_translation,
+                                                     dt) + accelerate * dt) * dt
+            else:
+                # Deceleration phase
+                incremental_translation = (np.divide(incremental_translation,
+                                                     dt) + decelerate * dt) * dt
+
+            # translate vertices
+            _pos = positions_xyzq[-1].copy()
+            _pos[:3] += incremental_translation
+            _pos[3:] = euler2quat( *(rot_steps * i + quat2euler(current_pos[3:])) )
+
+            positions_xyzq.append(_pos)
+
+        return np.array(positions_xyzq)
 
     def collect_trajectory(self, pose_init, pose_end):
         """ Policy for collecting data - random sampling"""
+        ''' Version 1 - fixed time step'''
 
         current_picker_position = np.array([[pose_init[1], pose_init[2], pose_init[0]-0.1],[pose_init[1], pose_init[2], pose_init[0]+0.1]])
 
         target_picker_position = np.array([[pose_end[1], pose_end[2], pose_end[0]-0.1],[pose_end[1], pose_end[2], pose_end[0]+0.1]])
 
         middle_position_step_ratio = np.random.uniform(0.3, 0.7)
-        middle_position_xy_translation = np.random.uniform(0.1, 0.2)
+        middle_position_xy_translation = np.random.uniform(0.2, 0.4)
         middle_position_z_ratio = np.random.uniform(0.2, 0.5)
 
         norm_direction = np.array([target_picker_position[1, 2] - target_picker_position[0, 2],
@@ -400,25 +458,32 @@ class TrajectoryClient:
 
 if __name__ == "__main__":
 
-    rospy.init_node("test_move")
+    rospy.init_node("main")
 
+    # init controller client and move to init pose
     client = TrajectoryClient()
     client.move_to_init_pose()
 
+    # init pose client and recorde the pose of the robot during the trajectory
     pose_cli = PoseClient()
     t = threading.Thread(target=pose_cli.run)
     t.daemon = True
     t.start()
 
+    # send trajectory and execute it
     client.send_cartesian_trajectory()
 
+    # save log to file
     try:
-        while t.is_alive():
-            # print("Waiting for background thread to finish")
+        while not rospy.is_shutdown():
             rospy.sleep(1)
-        print("Thread finished task, exiting")
-        # save log to file
-        np.save('DIA/real_exp/catkin_ws/src/robot_control/results/traj_log', pose_cli.pose_log)
-        np.save('DIA/real_exp/catkin_ws/src/robot_control/results/traj_desired', client.trajectory_log)
+            print("Waiting for rospy shutdown")
+
+        # # save log to file
+        # np.save('../log/traj_log', pose_cli.pose_log)
+        # np.save('../log/traj_desired', client.trajectory_log)
+
+        # print("Saving log to file")
+
     except KeyboardInterrupt:
         print("Exit")
