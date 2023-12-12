@@ -41,7 +41,7 @@ from cartesian_control_msgs.msg import (
     FollowCartesianTrajectoryGoal,
     CartesianTrajectoryPoint,
 )
-from transforms3d.euler import quat2euler, euler2quat
+from utils.euler import quat2euler, euler2quat
 
 import tf
 import tf2_ros
@@ -132,7 +132,13 @@ class TrajectoryClient:
         self.cartesian_trajectory_controller = CARTESIAN_TRAJECTORY_CONTROLLERS[0]
 
         self.trajectory_log = []
-        self.pose_init = np.array([-0.5, -0.3, 0.5, 1, 0, 0, 0])
+        self.pose_init = np.array([-0.15, -0.5, 0.46, 1, 0, 0, 0])
+        self.pose_init[3:] = euler2quat(np.pi, 0, 90/180*np.pi)
+
+        self.dt = 0.01
+        self.time_step = 150
+        self.swing_acc_max = 1.5
+        self.pull_acc_max = 0.5
 
     def move_to_init_pose(self):
 
@@ -184,10 +190,6 @@ class TrajectoryClient:
             rospy.logerr("Could not reach controller action server.")
             sys.exit(-1)
 
-        self.dt = 0.01
-        self.time_step = 150
-        self.acc_max = 1.5
-
         trajectory = self.collect_trajectory_v2(self.pose_init,)
 
         time_from_start = 0
@@ -229,15 +231,13 @@ class TrajectoryClient:
         """ Policy for collecting data - random sampling"""
         """ Version 2 - fixed max acceleration and float time step"""
 
-        self.target_theta = np.random.uniform(-np.pi/6, np.pi/6)
-        self.target_theta = np.pi/6
+        self.target_theta = np.random.uniform(-np.pi/12, np.pi/12)
         bias = 0.1
         target_pose = np.zeros(7)
-        target_pose[0] = cur_pose[0] + bias * np.sin(self.target_theta)
-        target_pose[1] = cur_pose[1] - bias * np.cos(self.target_theta)
-        target_pose[2] = 0.066
-        target_pose[3] = np.cos(self.target_theta/2)
-        target_pose[6] = np.sin(self.target_theta/2)
+        target_pose[0] = cur_pose[0] - bias * np.cos(self.target_theta)
+        target_pose[1] = cur_pose[1] - bias * np.sin(self.target_theta)
+        target_pose[2] = 0.06
+        target_pose[3:] = euler2quat(np.pi, 0, self.target_theta+np.pi/2)
 
         cur_rot = quat2euler(cur_pose[3:])
         target_rot = quat2euler(target_pose[3:])[2] - cur_rot[2]
@@ -245,15 +245,15 @@ class TrajectoryClient:
         # middle state sampling
 
         xy_translation = np.random.uniform(0.2, 0.4)
-        z_ratio = np.random.uniform(0.2, 0.5)
+        z_ratio = np.random.uniform(0.3, 0.7)
 
         middle_pose = target_pose.copy()
-        middle_pose[0] = middle_pose[0] + xy_translation * np.sin(target_rot)
-        middle_pose[1] = middle_pose[1] - xy_translation * np.cos(target_rot)
+        middle_pose[0] = middle_pose[0] - xy_translation * np.cos(target_rot)
+        middle_pose[1] = middle_pose[1] - xy_translation * np.sin(target_rot)
         middle_pose[2] = cur_pose[2] + z_ratio * (target_pose[2] - cur_pose[2])
 
-        trajectory_s2m = self._generate_trajectory(cur_pose, middle_pose, self.acc_max, self.dt)
-        trajectory_m2e = self._generate_trajectory(middle_pose, target_pose, 1, self.dt)
+        trajectory_s2m = self._generate_trajectory(cur_pose, middle_pose, self.swing_acc_max, self.dt)
+        trajectory_m2e = self._generate_trajectory(middle_pose, target_pose, self.pull_acc_max, self.dt)
 
         trajectory = np.concatenate((trajectory_s2m, trajectory_m2e[1:]), axis=0)
 
@@ -479,11 +479,11 @@ if __name__ == "__main__":
             rospy.sleep(1)
             print("Waiting for rospy shutdown")
 
-        # # save log to file
-        # np.save('../log/traj_log', pose_cli.pose_log)
-        # np.save('../log/traj_desired', client.trajectory_log)
+        # save log to file
+        np.save('../log/traj_log', pose_cli.pose_log)
+        np.save('../log/traj_desired', client.trajectory_log)
 
-        # print("Saving log to file")
+        print("Saving log to file")
 
     except KeyboardInterrupt:
         print("Exit")
