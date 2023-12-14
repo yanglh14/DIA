@@ -8,7 +8,7 @@ task: 'gen_data' # Phase of the experiment. Should be in ['gen_data', 'train_dy'
 env:
   env_name: 'ClothDrop' # Environment name
   env_shape: null # Shape of the environment : [platform, sphere, rod]
-  render_mode: 'particle' # Rendering mode. Should be in ['particle', 'cloth']
+  render_mode: 'cloth' # Rendering mode. Should be in ['particle', 'cloth']
   observation_mode: 'cam_rgb'
   num_picker: 2 # Number of pickers
   action_repeat: 1 # Number of action repeat

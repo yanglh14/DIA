@@ -234,6 +234,7 @@ class TrajectoryClient:
         self.target_theta = np.random.uniform(-np.pi/12, np.pi/12)
         bias = 0.1
         target_pose = np.zeros(7)
+        # Todo: not right if cur_pose not zero!!
         target_pose[0] = cur_pose[0] - bias * np.cos(self.target_theta)
         target_pose[1] = cur_pose[1] - bias * np.sin(self.target_theta)
         target_pose[2] = 0.06

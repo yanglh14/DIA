@@ -238,6 +238,19 @@ def draw_target_pos(frame, target_pos, matrix_world_to_camera, camera_height, ca
 
     return image
 
+def draw_traj_pos(frame, picker_pos, matrix_world_to_camera, camera_height, camera_width):
+
+    u,v = project_to_image(matrix_world_to_camera, picker_pos, camera_height, camera_width)
+
+    mid_index = np.argmax(u)
+    image = cv2.line(frame, (int(u[0]), int(v[0])), (int(u[mid_index]), int(v[mid_index])), (0, 255, 0), 2)
+    image = cv2.line(image, (int(u[mid_index]), int(v[mid_index])), (int(u[-1]), int(v[-1])), (0, 255, 0), 2)
+
+    # for i in range(5):
+    #     image = cv2.line(frame, (int(u[0]), int(v[0])), (int(u[mid_index]+np.random.uniform(-20,20)), int(v[mid_index]+np.random.uniform(-20,20))), (0, 255, 0), 1)
+
+    return image, mid_index
+
 def cem_make_gif(all_frames, save_dir, save_name):
     # Convert to T x index x C x H x W for pytorch
     all_frames = np.array(all_frames).transpose([1, 0, 4, 2, 3])

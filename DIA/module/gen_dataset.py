@@ -3,11 +3,16 @@ import numpy as np
 
 import pyflex
 
-from DIA.utils.utils import downsample, load_data, load_data_list, store_h5_data, pc_reward_model, draw_target_pos
+from DIA.utils.utils import downsample, load_data, load_data_list, store_h5_data, pc_reward_model, draw_target_pos, draw_traj_pos
 from DIA.utils.camera_utils import get_observable_particle_index, get_observable_particle_index_old, get_world_coords, get_observable_particle_index_3, get_matrix_world_to_camera
 from softgym.utils.visualization import save_numpy_as_gif
 
 import matplotlib.pyplot as plt
+
+plt.rcParams['font.size'] = 15
+plt.rcParams['font.family'] = 'sans-serif'
+plt.rcParams['font.sans-serif'] = 'Arial'
+plt.rcParams['font.style'] = 'normal'
 
 class DataCollector(object):
     def __init__(self, args, phase, env):
@@ -29,6 +34,9 @@ class DataCollector(object):
         else:
             raise AssertionError("Unknown phase")
 
+        self.swing_acc = 5
+        self.pull_acc = 3
+
     def gen_dataset(self):
         np.random.seed(0)
         rollout_idx = 0
@@ -36,18 +44,19 @@ class DataCollector(object):
             print("{} / {}".format(rollout_idx, self.n_rollout))
             rollout_dir = os.path.join(self.data_dir, str(rollout_idx))
             os.system('mkdir -p ' + rollout_dir)
-            self.env.reset()
+            self.env.reset(config_id=rollout_idx)
             prev_data = self.get_curr_env_data()  # Get new picker position
 
             if self.args.gen_gif:
                 frames_rgb, frames_depth = [prev_data['rgb']], [prev_data['depth']]
+                frames_top, frames_side = [], []
             current_config = self.env.get_current_config()
 
             actions = self._collect_trajectory(prev_data['picker_position'], current_config[
                 'target_picker_pos'])  # Get actions for the baseline and platform, len=99
 
             picker_position_list = []
-            for j in range(1, self.args.time_step):
+            for j in range(1, len(actions) + 1):
 
                 self.env.action_tool.update_picker_boundary([-0.3, 0, -0.5], [1, 2, 0.5])
                 if not self._data_test(prev_data):
@@ -56,7 +65,7 @@ class DataCollector(object):
 
                 action = actions[j - 1]
 
-                self.env.step(action)
+                _, reward, done, info = self.env.step(action, record_continuous_video=True, img_size=360)
                 curr_data = self.get_curr_env_data()
                 picker_position_list.append(curr_data['picker_position'])
 
@@ -67,6 +76,9 @@ class DataCollector(object):
                 if self.args.gen_gif:
                     frames_rgb.append(prev_data['rgb'])
                     frames_depth.append(prev_data['depth'])
+
+                    frames_top.append(info['image_top'])
+                    frames_side.append(info['image_side'])
 
             if self.args.gen_gif:
                 camera_pos, camera_angle = self.env.get_camera_params()
@@ -82,18 +94,46 @@ class DataCollector(object):
                 save_numpy_as_gif(frames_rgb, os.path.join(rollout_dir, 'rgb.gif'))
                 save_numpy_as_gif(np.array(frames_depth) * 255., os.path.join(rollout_dir, 'depth.gif'))
 
+                matrix_world_to_camera = get_matrix_world_to_camera(cam_angle=np.array([0, 0, 0]), cam_pos=np.array([0.3,0.3, 1.5]))
+
+                save_numpy_as_gif(np.array(frames_top), os.path.join(rollout_dir, 'rgb_top.gif'))
+
+                frames_side = np.array(frames_side)
+                for t in range(len(frames_side)):
+                    frames_side[t], mid_index = draw_traj_pos(frames_side[t], np.array(picker_position_list)[t:,1,:],
+                                                    matrix_world_to_camera[:3, :],
+                                                    self.env.camera_height, self.env.camera_width)
+                    if t ==0:
+                        index = mid_index
+                save_numpy_as_gif(frames_side[:index], os.path.join(rollout_dir, 'rgb_side_swing.gif'))
+                save_numpy_as_gif(frames_side[index:], os.path.join(rollout_dir, 'rgb_side_pull.gif'))
+
+                # for t in range(1):
+                #     frames_side[t], mid_index = draw_traj_pos(frames_side[t], np.array(picker_position_list)[t:,1,:],
+                #                                     matrix_world_to_camera[:3, :],
+                #                                     self.env.camera_height, self.env.camera_width)
+                #     if t ==0:
+                #         index = mid_index
+                # save_numpy_as_gif(frames_side[:1], os.path.join(rollout_dir, 'rgb_side_plan1.gif'))
+
                 # plot the picker position in 3 axis
                 picker_position_list = np.array(picker_position_list)
 
                 # plot the picker position and vel in 3 axis
 
                 fig, ((ax0,ax1,ax2),(ax3,ax4,ax5)) = plt.subplots(nrows=2, ncols=3, sharex=True,figsize=(12, 6))
-                ax0.plot(picker_position_list[:, 0, 0])
+                ax0.plot(picker_position_list[:, 0, 0],)
+                ax0.set_title('pos x')
                 ax1.plot(picker_position_list[:, 0, 1])
+                ax1.set_title('pos z')
                 ax2.plot(picker_position_list[:, 0, 2])
+                ax2.set_title('pos y')
                 ax3.plot(np.diff(np.diff(picker_position_list[:, 0, 0])/self.dt)/self.dt)
+                ax3.set_title('vel x')
                 ax4.plot(np.diff(np.diff(picker_position_list[:, 0, 1])/self.dt)/self.dt)
+                ax4.set_title('vel z')
                 ax5.plot(np.diff(np.diff(picker_position_list[:, 0, 2])/self.dt)/self.dt)
+                ax5.set_title('vel y')
                 plt.savefig(os.path.join(rollout_dir, 'picker_position.png'))
                 plt.close(fig)
 
@@ -162,9 +202,11 @@ class DataCollector(object):
 
         """ Policy for collecting data - random sampling"""
 
-        middle_position_step_ratio = np.random.uniform(0.3, 0.7)
         middle_position_xy_translation = np.random.uniform(0.2, 0.6)
         middle_position_z_ratio = np.random.uniform(0.2, 0.5)
+
+        middle_position_xy_translation = 0.35
+        middle_position_z_ratio = 0.35
 
         norm_direction = np.array([target_picker_position[1, 2] - target_picker_position[0, 2],
                                    target_picker_position[0, 0] - target_picker_position[1, 0]]) / \
@@ -176,26 +218,28 @@ class DataCollector(object):
                     target_picker_position[:, 1] - current_picker_position[:, 1])
 
         trajectory_start_to_middle = self._trajectory_generation(current_picker_position, middle_state,
-                                                              int(self.args.time_step * middle_position_step_ratio))
+                                                              self.swing_acc, self.dt)
 
         trajectory_middle_to_target = self._trajectory_generation(middle_state, target_picker_position,
-                                                            self.args.time_step - int(
-                                                                self.args.time_step * middle_position_step_ratio))
+                                                            self.pull_acc, self.dt)
 
         # cat trajectory_xy and trajectory_z
         trajectory = np.concatenate((trajectory_start_to_middle, trajectory_middle_to_target[1:]), axis=0)
         trajectory = trajectory.reshape(trajectory.shape[0], -1)
 
         action_list = []
-        for step in range(1, self.args.time_step):
+        for step in range(1, trajectory.shape[0]):
             action = np.ones_like(self.env.action_space.sample(), dtype=np.float32)
             action[:3], action[4:7] = trajectory[step, :3] - trajectory[step - 1, :3], trajectory[step,
                                                                                        3:6] - trajectory[step - 1, 3:6]
             action_list.append(action)
 
+        action_list = np.array(action_list)
+        action_list += np.random.normal(0, 0.003, size=(len(action_list), 8))
+        action_list[:,[3,7]] = 1
         return action_list
 
-    def _trajectory_generation(self, current_picker_position, target_picker_position, time_steps):
+    def _trajectory_generation(self, current_picker_position, target_picker_position, acc_max, dt):
 
         """ Policy for trajectory generation based on current and target_picker_position"""
 
@@ -209,14 +253,21 @@ class DataCollector(object):
                 np.arctan2(initial_vertices_xy[1, 1] - initial_vertices_xy[0, 1],
                            initial_vertices_xy[1, 0] - initial_vertices_xy[0, 0])
 
-        # number of steps
-        steps = time_steps
-
-        # calculate angle of rotation for each step
-        rotation_angle = angle / steps
-
         # translation vector: difference between final and initial centers
         translation = (target_picker_position.mean(axis=0) - current_picker_position.mean(axis=0))
+
+        _time_steps = max(np.sqrt(4 * np.abs(translation) / acc_max) / dt)
+        steps = np.ceil(_time_steps).max().astype(int)
+
+        # calculate angle of rotation for each step
+        rot_steps = angle / steps
+
+        accel_steps = steps // 2
+        decel_steps = steps - accel_steps
+
+        v_max = translation * 2 / (steps * dt)
+        accelerate = v_max / (accel_steps * dt)
+        decelerate = -v_max / (decel_steps * dt)
 
         # calculate incremental translation
         incremental_translation = [0, 0, 0]
@@ -224,32 +275,25 @@ class DataCollector(object):
         # initialize list of vertex positions
         positions_xzy = [current_picker_position]
 
-        # divide the steps into two parts
-        accelerate_steps = steps // 2
-        decelerate_steps = steps - accelerate_steps
-
-        v_max = translation * 2 / ((accelerate_steps + decelerate_steps) * self.dt)
-        acc_accelerate = v_max / (accelerate_steps * self.dt)
-        acc_decelerate = -v_max / (decelerate_steps * self.dt)
 
         # apply translation and rotation in each step
         for i in range(steps):
-            if i < accelerate_steps:
+            if i < accel_steps:
                 # Acceleration phase
                 incremental_translation = (np.divide(incremental_translation,
-                                                     self.dt) + acc_accelerate * self.dt) * self.dt
+                                                     self.dt) + accelerate * self.dt) * self.dt
             else:
                 # Deceleration phase
                 incremental_translation = (np.divide(incremental_translation,
-                                                     self.dt) + acc_decelerate * self.dt) * self.dt
+                                                     self.dt) + decelerate * self.dt) * self.dt
 
             # translate vertices
             vertices = positions_xzy[-1] + incremental_translation
 
             # calculate rotation matrix for this step
-            rotation_matrix = np.array([[np.cos(rotation_angle), 0, -np.sin(rotation_angle)],
+            rotation_matrix = np.array([[np.cos(rot_steps), 0, -np.sin(rot_steps)],
                                         [0, 1, 0],
-                                        [np.sin(rotation_angle), 0, np.cos(rotation_angle)]])
+                                        [np.sin(rot_steps), 0, np.cos(rot_steps)]])
 
             # rotate vertices
             center = vertices.mean(axis=0)

@@ -1,6 +1,11 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
+plt.rcParams['font.size'] = 15
+plt.rcParams['font.family'] = 'sans-serif'
+plt.rcParams['font.sans-serif'] = 'Arial'
+plt.rcParams['font.style'] = 'normal'
+
 traj_log = np.load('../log/traj_log.npy')
 traj_desired = np.load('../log/traj_desired.npy')
 
@@ -45,59 +50,62 @@ desired_y_acc = np.diff(np.diff(traj_desired_y)*100)*100
 desired_z_acc = np.diff(np.diff(traj_desired_z)*100)*100
 
 # six subplots - pos and vel for x, y, z
-fig, ((ax1, ax2, ax3), (ax4, ax5, ax6), (ax7, ax8, ax9)) = plt.subplots(3, 3)
+fig, ((ax1, ax2, ax3), (ax7, ax8, ax9), (ax4, ax5, ax6)) = plt.subplots(3, 3)
 ax1.plot(traj_log_x_index, label='Move Log')
 ax1.plot(traj_desired_x, label='Desired Trajectory')
 ax1.set_title('pos x')
-ax1.set_xlabel('Time (s)')
 ax1.set_ylabel('Traj Log')
+ax1.legend()
 
 ax2.plot(traj_log_y_index, label='Move Log')
 ax2.plot(traj_desired_y, label='Desired Trajectory')
 ax2.set_title('pos y')
-ax2.set_xlabel('Time (s)')
 ax2.set_ylabel('Traj Log')
+ax2.legend()
 
 ax3.plot(traj_log_z_index, label='Move Log')
 ax3.plot(traj_desired_z, label='Desired Trajectory')
 ax3.set_title('pos z')
-ax3.set_xlabel('Time (s)')
 ax3.set_ylabel('Traj Log')
+ax3.legend()
 
 ax4.plot(log_x_acc, label='Move Log')
 ax4.plot(desired_x_acc, label='Desired Trajectory')
 ax4.set_title('acc x')
 ax4.set_xlabel('Time (s)')
 ax4.set_ylabel('Traj Log')
+ax4.legend()
 
 ax5.plot(log_y_acc, label='Move Log')
 ax5.plot(desired_y_acc, label='Desired Trajectory')
 ax5.set_title('acc y')
 ax5.set_xlabel('Time (s)')
 ax5.set_ylabel('Traj Log')
+ax5.legend()
 
 ax6.plot(log_z_acc, label='Move Log')
 ax6.plot(desired_z_acc, label='Desired Trajectory')
 ax6.set_title('acc z')
 ax6.set_xlabel('Time (s)')
 ax6.set_ylabel('Traj Log')
+ax6.legend()
+
 
 ax7.plot(log_x_vel, label='Move Log')
 ax7.plot(desired_x_vel, label='Desired Trajectory')
 ax7.set_title('vel x')
-ax7.set_xlabel('Time (s)')
 ax7.set_ylabel('Traj Log')
+ax7.legend()
 
 ax8.plot(log_y_vel, label='Move Log')
 ax8.plot(desired_y_vel, label='Desired Trajectory')
 ax8.set_title('vel y')
-ax8.set_xlabel('Time (s)')
 ax8.set_ylabel('Traj Log')
+ax8.legend()
 
 ax9.plot(log_z_vel, label='Move Log')
 ax9.plot(desired_z_vel, label='Desired Trajectory')
 ax9.set_title('vel z')
-ax9.set_xlabel('Time (s)')
 ax9.set_ylabel('Traj Log')
 
 plt.tight_layout()
