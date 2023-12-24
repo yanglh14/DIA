@@ -133,6 +133,10 @@ Terms used in function names
 * *quat* : quaternion shape (4,)
 """
 
+"""
+The quat format is changed to (x,y,z,w) from original version (w,x,y,z) by Yang Linhan 
+"""
+
 import math
 
 import numpy as np

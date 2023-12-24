@@ -1,30 +1,3 @@
-#!/usr/bin/env python
-
-# -- BEGIN LICENSE BLOCK ----------------------------------------------
-# Copyright 2021 FZI Forschungszentrum Informatik
-# Created on behalf of Universal Robots A/S
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# -- END LICENSE BLOCK ------------------------------------------------
-#
-# ---------------------------------------------------------------------
-# !\file
-#
-# \author  Felix Exner mauch@fzi.de
-# \date    2021-08-05
-#
-#
-# ---------------------------------------------------------------------
 import sys
 import threading
 
@@ -41,6 +14,7 @@ from cartesian_control_msgs.msg import (
     FollowCartesianTrajectoryGoal,
     CartesianTrajectoryPoint,
 )
+
 from utils.euler import quat2euler, euler2quat
 
 import tf
@@ -132,7 +106,7 @@ class TrajectoryClient:
         self.cartesian_trajectory_controller = CARTESIAN_TRAJECTORY_CONTROLLERS[0]
 
         self.trajectory_log = []
-        self.pose_init = np.array([-0.15, -0.5, 0.46, 1, 0, 0, 0])
+        self.pose_init = np.array([-0., -0.5, 0.46, 1, 0, 0, 0])
         self.pose_init[3:] = euler2quat(np.pi, 0, 90/180*np.pi)
 
         self.dt = 0.01
@@ -190,7 +164,7 @@ class TrajectoryClient:
             rospy.logerr("Could not reach controller action server.")
             sys.exit(-1)
 
-        trajectory = self.collect_trajectory_v2(self.pose_init,)
+        trajectory = self.collect_trajectory_v2(self.pose_init)
 
         time_from_start = 0
 
@@ -231,14 +205,13 @@ class TrajectoryClient:
         """ Policy for collecting data - random sampling"""
         """ Version 2 - fixed max acceleration and float time step"""
 
-        self.target_theta = np.random.uniform(-np.pi/12, np.pi/12)
+        self.target_theta = np.random.uniform(-np.pi / 12, np.pi / 12)
         bias = 0.1
         target_pose = np.zeros(7)
-        # Todo: not right if cur_pose not zero!!
         target_pose[0] = cur_pose[0] - bias * np.cos(self.target_theta)
         target_pose[1] = cur_pose[1] - bias * np.sin(self.target_theta)
         target_pose[2] = 0.06
-        target_pose[3:] = euler2quat(np.pi, 0, self.target_theta+np.pi/2)
+        target_pose[3:] = euler2quat(np.pi, 0, self.target_theta + np.pi / 2)
 
         cur_rot = quat2euler(cur_pose[3:])
         target_rot = quat2euler(target_pose[3:])[2] - cur_rot[2]
@@ -292,114 +265,11 @@ class TrajectoryClient:
             # translate vertices
             _pos = positions_xyzq[-1].copy()
             _pos[:3] += incremental_translation
-            _pos[3:] = euler2quat( *(rot_steps * i + quat2euler(current_pos[3:])) )
+            _pos[3:] = euler2quat(*(rot_steps * i + quat2euler(current_pos[3:])))
 
             positions_xyzq.append(_pos)
 
         return np.array(positions_xyzq)
-
-    def collect_trajectory(self, pose_init, pose_end):
-        """ Policy for collecting data - random sampling"""
-        ''' Version 1 - fixed time step'''
-
-        current_picker_position = np.array([[pose_init[1], pose_init[2], pose_init[0]-0.1],[pose_init[1], pose_init[2], pose_init[0]+0.1]])
-
-        target_picker_position = np.array([[pose_end[1], pose_end[2], pose_end[0]-0.1],[pose_end[1], pose_end[2], pose_end[0]+0.1]])
-
-        middle_position_step_ratio = np.random.uniform(0.3, 0.7)
-        middle_position_xy_translation = np.random.uniform(0.2, 0.4)
-        middle_position_z_ratio = np.random.uniform(0.2, 0.5)
-
-        norm_direction = np.array([target_picker_position[1, 2] - target_picker_position[0, 2],
-                                   target_picker_position[0, 0] - target_picker_position[1, 0]]) / \
-                         np.linalg.norm(np.array([target_picker_position[1, 2] - target_picker_position[0, 2],
-                                                  target_picker_position[0, 0] - target_picker_position[1, 0]]))
-        middle_state = target_picker_position.copy()
-        middle_state[:, [0, 2]] = target_picker_position[:, [0, 2]] + -middle_position_xy_translation * norm_direction
-        middle_state[:, 1] = current_picker_position[:, 1] + middle_position_z_ratio * (
-                    target_picker_position[:, 1] - current_picker_position[:, 1])
-
-        trajectory_start_to_middle = self._trajectory_generation(current_picker_position, middle_state,
-                                                              int(self.time_step * middle_position_step_ratio))
-
-        trajectory_middle_to_target = self._trajectory_generation(middle_state, target_picker_position,
-                                                            self.time_step - int(
-                                                                self.time_step * middle_position_step_ratio))
-
-        # cat trajectory_xy and trajectory_z
-        trajectory = np.concatenate((trajectory_start_to_middle, trajectory_middle_to_target[1:]), axis=0)
-        trajectory = trajectory.reshape(trajectory.shape[0], -1)
-
-        trajectory = (trajectory[:,:3] + trajectory[:,3:6])/2
-
-        trajectory[:,[0,1,2]] = trajectory[:,[2,0,1]]
-
-        return trajectory
-
-    def _trajectory_generation(self, current_picker_position, target_picker_position, time_steps):
-
-        """ Policy for trajectory generation based on current and target_picker_position"""
-
-        # select column 1 and 3 in current_picker_position and target_picker_position
-        initial_vertices_xy = current_picker_position[:, [0, 2]]
-        final_vertices_xy = target_picker_position[:, [0, 2]]
-
-        # calculate angle of rotation from initial to final segment in xy plane
-        angle = np.arctan2(final_vertices_xy[1, 1] - final_vertices_xy[0, 1],
-                           final_vertices_xy[1, 0] - final_vertices_xy[0, 0]) - \
-                np.arctan2(initial_vertices_xy[1, 1] - initial_vertices_xy[0, 1],
-                           initial_vertices_xy[1, 0] - initial_vertices_xy[0, 0])
-
-        # number of steps
-        steps = time_steps
-
-        # calculate angle of rotation for each step
-        rotation_angle = angle / steps
-
-        # translation vector: difference between final and initial centers
-        translation = (target_picker_position.mean(axis=0) - current_picker_position.mean(axis=0))
-
-        # calculate incremental translation
-        incremental_translation = [0, 0, 0]
-
-        # initialize list of vertex positions
-        positions_xzy = [current_picker_position]
-
-        # divide the steps into two parts
-        accelerate_steps = steps // 2
-        decelerate_steps = steps - accelerate_steps
-
-        v_max = translation * 2 / ((accelerate_steps + decelerate_steps) * self.dt)
-        acc_accelerate = v_max / (accelerate_steps * self.dt)
-        acc_decelerate = -v_max / (decelerate_steps * self.dt)
-
-        # apply translation and rotation in each step
-        for i in range(steps):
-            if i < accelerate_steps:
-                # Acceleration phase
-                incremental_translation = (np.divide(incremental_translation,
-                                                     self.dt) + acc_accelerate * self.dt) * self.dt
-            else:
-                # Deceleration phase
-                incremental_translation = (np.divide(incremental_translation,
-                                                     self.dt) + acc_decelerate * self.dt) * self.dt
-
-            # translate vertices
-            vertices = positions_xzy[-1] + incremental_translation
-
-            # calculate rotation matrix for this step
-            rotation_matrix = np.array([[np.cos(rotation_angle), 0, -np.sin(rotation_angle)],
-                                        [0, 1, 0],
-                                        [np.sin(rotation_angle), 0, np.cos(rotation_angle)]])
-
-            # rotate vertices
-            center = vertices.mean(axis=0)
-            vertices = (rotation_matrix @ (vertices - center).T).T + center
-
-            # append vertices to positions
-            positions_xzy.append(vertices)
-
-        return positions_xzy
 
     ###############################################################################################
     #                                                                                             #
@@ -481,8 +351,8 @@ if __name__ == "__main__":
             print("Waiting for rospy shutdown")
 
         # save log to file
-        np.save('../log/traj_log', pose_cli.pose_log)
-        np.save('../log/traj_desired', client.trajectory_log)
+        # np.save('../log/traj_log', pose_cli.pose_log)
+        # np.save('../log/traj_desired', client.trajectory_log)
 
         print("Saving log to file")
 
