@@ -58,17 +58,18 @@ class PoseClient:
             self.tf_listener.waitForTransform(target_frame, source_frame, time, rospy.Duration(0))
             tr_target2source = self.tf_listener.lookupTransform(target_frame, source_frame, time)
             # tf_target2source = self.tf_listener.fromTranslationRotation(*tr_target2source)
-            return tr_target2source 
+            return tr_target2source
         except Exception as e:
             print(e)
-    
+
     def publish_tool_pose(self):
         tr_tool = self.get_tool_tf()
         if tr_tool == None:
             return
         pose = geometry_msgs.Pose(
-                geometry_msgs.Vector3(tr_tool[0][0], tr_tool[0][1], tr_tool[0][2]), geometry_msgs.Quaternion(tr_tool[1][0], tr_tool[1][1], tr_tool[1][2], tr_tool[1][3])
-            )
+            geometry_msgs.Vector3(tr_tool[0][0], tr_tool[0][1], tr_tool[0][2]),
+            geometry_msgs.Quaternion(tr_tool[1][0], tr_tool[1][1], tr_tool[1][2], tr_tool[1][3])
+        )
         self.pub.publish(pose)
 
         # logging
@@ -76,7 +77,7 @@ class PoseClient:
         self.pose_log.append(np.array([time_now.to_sec(), tr_tool[0][0], tr_tool[0][1], tr_tool[0][2]]))
 
     def run(self):
-        rate = rospy.Rate(100) # 100hz
+        rate = rospy.Rate(100)  # 100hz
         try:
             while not rospy.is_shutdown():
                 self.publish_tool_pose()
@@ -107,7 +108,7 @@ class TrajectoryClient:
 
         self.trajectory_log = []
         self.pose_init = np.array([-0., -0.5, 0.46, 1, 0, 0, 0])
-        self.pose_init[3:] = euler2quat(np.pi, 0, 90/180*np.pi)
+        self.pose_init[3:] = euler2quat(np.pi, 0, 90 / 180 * np.pi)
 
         self.dt = 0.01
         self.time_step = 150
@@ -134,11 +135,11 @@ class TrajectoryClient:
         # Create initial pose
         point = CartesianTrajectoryPoint()
         point.pose = geometry_msgs.Pose(
-            geometry_msgs.Vector3(self.pose_init[0], self.pose_init[1], self.pose_init[2]), geometry_msgs.Quaternion(self.pose_init[3], self.pose_init[4], self.pose_init[5], self.pose_init[6])
+            geometry_msgs.Vector3(self.pose_init[0], self.pose_init[1], self.pose_init[2]),
+            geometry_msgs.Quaternion(self.pose_init[3], self.pose_init[4], self.pose_init[5], self.pose_init[6])
         )
         point.time_from_start = rospy.Duration(5.0)
         self.goal.trajectory.points.append(point)
-
 
         trajectory_client.send_goal(self.goal)
         trajectory_client.wait_for_result()
@@ -303,9 +304,9 @@ class TrajectoryClient:
     def switch_controller(self, target_controller):
         """Activates the desired controller and stops all others from the predefined list above"""
         other_controllers = (
-            JOINT_TRAJECTORY_CONTROLLERS
-            + CARTESIAN_TRAJECTORY_CONTROLLERS
-            + CONFLICTING_CONTROLLERS
+                JOINT_TRAJECTORY_CONTROLLERS
+                + CARTESIAN_TRAJECTORY_CONTROLLERS
+                + CONFLICTING_CONTROLLERS
         )
 
         other_controllers.remove(target_controller)

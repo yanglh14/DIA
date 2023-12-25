@@ -1,5 +1,5 @@
 import numpy as np
-from DIA.real_exp.catkin_ws.src.robot_control.scripts.utils.euler import quat2euler, euler2quat
+from DIA.real_exp.scripts.utils.euler import quat2euler, euler2quat
 
 class TrajectoryGenerator:
 

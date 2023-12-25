@@ -60,12 +60,14 @@ class ClothDropEnv(ClothEnv):
 
             config['rot_angle'] = rot_angle
             config['env_shape'] = self.env_shape
-            delta_x = np.random.uniform(0.05, 0.15)
+            x_target = np.random.uniform(0.05, 0.15)
 
+            x_target = 0.1
+            rot_angle = np.pi/12
             if self.env_shape == 'platform':
 
                 box_size = np.array([0.20, 0.02, 0.20])
-                box_pos =  np.array([delta_x + cloth_dimx * self.cloth_particle_radius / 2, 0, 0])
+                box_pos =  np.array([x_target + cloth_dimx * self.cloth_particle_radius / 2, 0, 0])
                 box_quat = np.array([0, np.sin(rot_angle / 2), 0, np.cos(rot_angle / 2)])
 
                 rot_mat = np.array([[np.cos(rot_angle), 0, -np.sin(rot_angle)],
@@ -76,7 +78,7 @@ class ClothDropEnv(ClothEnv):
                 box_size, box_pos, box_quat = self._add_box(box_size = box_size, box_pos = box_pos, box_quat = box_quat)
 
                 delta_z_initial = box_size[1] + 0.3
-                delta_z_target = box_size[1]
+                z_target = box_size[1]
 
                 config['shape_pos'] = box_pos
                 config['shape_size'] = box_size
@@ -88,7 +90,7 @@ class ClothDropEnv(ClothEnv):
                 sphere_random_pos = self._add_sphere(sphere_radius=sphere_radius, sphere_position=sphere_position, sphere_quat= np.array([0., 0., 0., 1.]), random_pos=True)
                 delta_x = sphere_random_pos - cloth_dimx * self.cloth_particle_radius / 2
                 delta_z_initial = sphere_radius
-                delta_z_target = sphere_radius
+                z_target = sphere_radius
 
                 config['shape_pos'] = sphere_random_pos
                 config['shape_size'] = sphere_radius
@@ -100,23 +102,22 @@ class ClothDropEnv(ClothEnv):
                 rod_random_pos = self._add_rod(rod_size=rod_size, rod_position=rod_position, rod_quat= np.array([0., 0., 0., 1.]), random_pos=True)
                 delta_x = rod_random_pos - cloth_dimx * self.cloth_particle_radius / 2
                 delta_z_initial = 0.4
-                delta_z_target = rod_position[1] + rod_size[1]
+                z_target = rod_position[1] + rod_size[1]
 
                 config['shape_pos'] = rod_random_pos
                 config['shape_size'] = rod_size
                 config['shape_quat'] = np.array([rod_random_pos, rod_position[1], rod_position[2]])
 
             else:
-                delta_z_initial = 0.6 + np.random.uniform(0.08, 0.12)
-                delta_z_target = 0
+                z_target = 0
 
             ## Set the cloth to target position and wait to stablize
 
-            flat_pos = self._set_to_flat(delta_x=delta_x, delta_z=delta_z_target, rot_angle=rot_angle)
+            flat_pos = self._set_to_flat(x_target=x_target, delta_z= z_target, rot_angle=rot_angle)
 
             pickpoints = self._get_drop_point_idx()[:2]  # Pick two corners of the cloth and wait until stablize
-            config['delta_x'] = delta_x
-            config['target_picker_pos'] = flat_pos[pickpoints, :3]
+            config['x_target'] = x_target
+            config['target_picker_pos'] = flat_pos[pickpoints, :3] + np.array([0., self.action_tool.picker_radius, 0.])
 
             # wait to stablize
             for _ in range(max_wait_step):
@@ -162,16 +163,16 @@ class ClothDropEnv(ClothEnv):
 
         return generated_configs, generated_states
 
-    def _set_to_flat(self, delta_x=0, delta_y=0, delta_z=0, rot_angle=0):
+    def _set_to_flat(self, x_target=0, delta_y=0, delta_z=0, rot_angle=0):
         curr_pos = pyflex.get_positions().reshape((-1, 4))
-        flat_pos = self._get_flat_pos(delta_x=delta_x, delta_z=delta_z, rot_angle=rot_angle)
+        flat_pos = self._get_flat_pos(x_target=x_target, delta_z=delta_z, rot_angle=rot_angle)
         curr_pos[:, :3] = flat_pos
         pyflex.set_positions(curr_pos)
         pyflex.step()
 
         return flat_pos
 
-    def _get_flat_pos(self, delta_x=0, delta_y=0, delta_z=0, rot_angle=0):
+    def _get_flat_pos(self, x_target=0, delta_y=0, delta_z=0, rot_angle=0):
         config = self.get_current_config()
         dimx, dimy = config['ClothSize']
 
@@ -179,7 +180,7 @@ class ClothDropEnv(ClothEnv):
         y = np.array([i * self.cloth_particle_radius for i in range(dimy)])
         y = y - np.mean(y)
 
-        x += delta_x
+        x += x_target
         # print(x.mean(),delta_x)
         xx, yy = np.meshgrid(x, y)
         curr_pos = np.zeros([dimx * dimy, 3], dtype=np.float32)
@@ -195,6 +196,7 @@ class ClothDropEnv(ClothEnv):
         return curr_pos
 
     def _set_to_vertical(self, x_low, height_low, height_high):
+
         curr_pos = pyflex.get_positions().reshape((-1, 4))
         vertical_pos = self._get_vertical_pos(x_low, height_low)
         curr_pos[:, :3] = vertical_pos
@@ -282,8 +284,8 @@ class ClothDropEnv(ClothEnv):
         """ Set the default config of the environment and load it to self.config """
         config = {
             'ClothPos': [-1.6, 2.0, -0.8],
-            'ClothSize': [48, 48],
-            'ClothStiff': [0.9, 1.0, 0.9],  # Stretch, Bend and Shear
+            'ClothSize': [36, 48],
+            'ClothStiff': [0.9, 0.1, 0.9],  # Stretch, Bend and Shear
             'camera_name': 'default_camera',
             # 'camera_params': {'default_camera':
             #                       {'pos': np.array([1.07199, 0.94942, 1.15691]),
@@ -291,8 +293,8 @@ class ClothDropEnv(ClothEnv):
             #                        'width': self.camera_width,
             #                        'height': self.camera_height}},
             'camera_params': {'default_camera':
-                                  {'pos': np.array([1.8,0.5, 0]),
-                                   'angle': np.array([1.57, -0.2, 0]),
+                                  {'pos': np.array([1.2, 0.7, 0]),
+                                   'angle': np.array([1.57, -np.pi/6, 0]),
                                    'width': self.camera_width,
                                    'height': self.camera_height}},
 
