@@ -146,3 +146,10 @@ DPI-Net/dump_*/
 test_*/
 imgs/
 outputs/
+
+devel/
+install/
+
+Universal_Robots_ROS_Driver
+universal_robot
+realsense-ros

@@ -206,7 +206,7 @@ class TrajectoryClient:
         """ Version 2 - fixed max acceleration and float time step"""
 
         self.target_theta = np.random.uniform(-np.pi / 12, np.pi / 12)
-        bias = 0.1
+        bias = np.random.uniform(0.05, 0.15)
         target_pose = np.zeros(7)
         target_pose[0] = cur_pose[0] - bias * np.cos(self.target_theta)
         target_pose[1] = cur_pose[1] - bias * np.sin(self.target_theta)

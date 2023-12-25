@@ -12,7 +12,7 @@
     <option name="ADD_CONTENT_ROOTS" value="true" />
     <option name="ADD_SOURCE_ROOTS" value="true" />
     <option name="SCRIPT_NAME" value="$PROJECT_DIR$/DIA/main.py" />
-    <option name="PARAMETERS" value="exp_name=dia_data_shapes task=gen_data dataset.dataf=./data/dia_shapes log_dir=./data/dia_shapes dataset.gen_gif=1 dataset.n_rollout=10 env.cached_states_path=dia_stiffness.pkl env.num_variations=10 env.vary_cloth_size=false env.vary_stiffness=true env.vary_orientation=false" />
+    <option name="PARAMETERS" value="exp_name=dia_data_shapes task=gen_data dataset.dataf=./data/dia_shape_stiff log_dir=./data/dia_shape_stiff dataset.gen_gif=1 dataset.n_rollout=5000 env.cached_states_path=dia_stiffness.pkl env.num_variations=1000 env.vary_cloth_size=true env.vary_stiffness=true env.vary_orientation=true" />
     <option name="SHOW_COMMAND_LINE" value="false" />
     <option name="EMULATE_TERMINAL" value="false" />
     <option name="MODULE_MODE" value="false" />

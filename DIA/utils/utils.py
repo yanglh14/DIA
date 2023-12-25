@@ -156,8 +156,9 @@ def store_h5_data(data_names, data, path):
 
     if data_names == None:
         data_names = data.keys()
-
     for name in data_names:
+        if name == 'rgb' or name == 'depth':
+            continue
         hf.create_dataset(name, data=data[name])
     hf.close()
 

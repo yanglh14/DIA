@@ -205,11 +205,18 @@ class FlexEnv(gym.Env):
         if record_continuous_video:
             info['flex_env_recorded_frames'] = frames
 
-            self.update_camera('obs_top', {'pos': np.array([0.2,1.0, 0]),
+            self.update_camera('obs_top', {'pos': np.array([0.2,1.5, 0]),
                                            'angle': np.array([1.57, -1.57, 0]),
                                            'width': self.camera_width,
                                            'height': self.camera_height})
             info['image_top'] = self.get_image(img_size, img_size)
+
+            self.update_camera('obs_side', {'pos': np.array([0.3,0.3, 1.5]),
+                                            'angle': np.array([0, 0, 0]),
+                                           'width': self.camera_width,
+                                           'height': self.camera_height})
+            info['image_side'] = self.get_image(img_size, img_size)
+
             self.update_camera('default_camera')
         return obs, reward, done, info
 

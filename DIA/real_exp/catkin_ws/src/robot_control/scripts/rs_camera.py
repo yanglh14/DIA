@@ -40,7 +40,7 @@ class RSListener:
         rospy.init_node('rs_listener', anonymous=True)
 
         self.data = []
-        self.counter = 0
+
     def visulaize(self, point_cloud):
 
         # Assuming you have a list/array of points named 'point_cloud'
@@ -73,19 +73,12 @@ class RSListener:
         # Read points from the point cloud data
 
         self.data = np.array([pc2_to_xyzrgb(pp) for pp in pc2.read_points(data, skip_nans=True, field_names=("x", "y", "z", "rgb")) if pp[0] > 0])
-        self.counter += 1
-        if self.counter == 10:
-            np.save('../log/rs_data',self.data)
-
-            rospy.loginfo("Task done")
-            rospy.signal_shutdown("Task Done")
+        print(self.data.shape)
 
     def listener(self):
         rospy.Subscriber("/camera/depth/color/points", PointCloud2, self._pointscloudCallback)
 
         # Prevent the script from exiting until the node is shutdown
-
-
         try:
             rospy.spin()
         except KeyboardInterrupt:

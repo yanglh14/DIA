@@ -34,17 +34,17 @@ class DataCollector(object):
         else:
             raise AssertionError("Unknown phase")
 
-        self.swing_acc = 5
-        self.pull_acc = 3
+        self.swing_acc = 5.0
+        self.pull_acc = 3.0
 
     def gen_dataset(self):
         np.random.seed(0)
-        rollout_idx = 0
+        rollout_idx = 1001
         while rollout_idx < self.n_rollout:
             print("{} / {}".format(rollout_idx, self.n_rollout))
             rollout_dir = os.path.join(self.data_dir, str(rollout_idx))
             os.system('mkdir -p ' + rollout_dir)
-            self.env.reset(config_id=rollout_idx)
+            self.env.reset()
             prev_data = self.get_curr_env_data()  # Get new picker position
 
             if self.args.gen_gif:
@@ -73,6 +73,7 @@ class DataCollector(object):
                 prev_data['action'] = action
                 store_h5_data(self.data_names, prev_data, os.path.join(rollout_dir, str(j - 1) + '.h5'))
                 prev_data = curr_data
+
                 if self.args.gen_gif:
                     frames_rgb.append(prev_data['rgb'])
                     frames_depth.append(prev_data['depth'])
@@ -92,54 +93,46 @@ class DataCollector(object):
                                                     self.env._get_key_point_idx())
 
                 save_numpy_as_gif(frames_rgb, os.path.join(rollout_dir, 'rgb.gif'))
-                save_numpy_as_gif(np.array(frames_depth) * 255., os.path.join(rollout_dir, 'depth.gif'))
+                # save_numpy_as_gif(np.array(frames_depth) * 255., os.path.join(rollout_dir, 'depth.gif'))
+                #
+                # save_numpy_as_gif(np.array(frames_top), os.path.join(rollout_dir, 'rgb_top.gif'))
 
-                matrix_world_to_camera = get_matrix_world_to_camera(cam_angle=np.array([0, 0, 0]), cam_pos=np.array([0.3,0.3, 1.5]))
-
-                save_numpy_as_gif(np.array(frames_top), os.path.join(rollout_dir, 'rgb_top.gif'))
-
-                frames_side = np.array(frames_side)
-                for t in range(len(frames_side)):
-                    frames_side[t], mid_index = draw_traj_pos(frames_side[t], np.array(picker_position_list)[t:,1,:],
-                                                    matrix_world_to_camera[:3, :],
-                                                    self.env.camera_height, self.env.camera_width)
-                    if t ==0:
-                        index = mid_index
-                save_numpy_as_gif(frames_side[:index], os.path.join(rollout_dir, 'rgb_side_swing.gif'))
-                save_numpy_as_gif(frames_side[index:], os.path.join(rollout_dir, 'rgb_side_pull.gif'))
-
-                # for t in range(1):
+                # matrix_world_to_camera = get_matrix_world_to_camera(cam_angle=np.array([0, 0, 0]), cam_pos=np.array([0.3,0.3, 1.5]))
+                #
+                # frames_side = np.array(frames_side)
+                # for t in range(len(frames_side)):
                 #     frames_side[t], mid_index = draw_traj_pos(frames_side[t], np.array(picker_position_list)[t:,1,:],
                 #                                     matrix_world_to_camera[:3, :],
                 #                                     self.env.camera_height, self.env.camera_width)
                 #     if t ==0:
                 #         index = mid_index
-                # save_numpy_as_gif(frames_side[:1], os.path.join(rollout_dir, 'rgb_side_plan1.gif'))
+                # save_numpy_as_gif(frames_side[:index], os.path.join(rollout_dir, 'rgb_side_swing.gif'))
+                # save_numpy_as_gif(frames_side[index:], os.path.join(rollout_dir, 'rgb_side_pull.gif'))
 
                 # plot the picker position in 3 axis
                 picker_position_list = np.array(picker_position_list)
 
                 # plot the picker position and vel in 3 axis
 
-                fig, ((ax0,ax1,ax2),(ax3,ax4,ax5)) = plt.subplots(nrows=2, ncols=3, sharex=True,figsize=(12, 6))
-                ax0.plot(picker_position_list[:, 0, 0],)
-                ax0.set_title('pos x')
-                ax1.plot(picker_position_list[:, 0, 1])
-                ax1.set_title('pos z')
-                ax2.plot(picker_position_list[:, 0, 2])
-                ax2.set_title('pos y')
-                ax3.plot(np.diff(np.diff(picker_position_list[:, 0, 0])/self.dt)/self.dt)
-                ax3.set_title('vel x')
-                ax4.plot(np.diff(np.diff(picker_position_list[:, 0, 1])/self.dt)/self.dt)
-                ax4.set_title('vel z')
-                ax5.plot(np.diff(np.diff(picker_position_list[:, 0, 2])/self.dt)/self.dt)
-                ax5.set_title('vel y')
-                plt.savefig(os.path.join(rollout_dir, 'picker_position.png'))
-                plt.close(fig)
-
-                plt.plot(picker_position_list[:, 0, 0], picker_position_list[:, 0, 1])
-                plt.savefig(os.path.join(rollout_dir, 'X-Z.png'))
-                plt.close(fig)
+                # fig, ((ax0,ax1,ax2),(ax3,ax4,ax5)) = plt.subplots(nrows=2, ncols=3, sharex=True, figsize=(12, 6))
+                # ax0.plot(picker_position_list[:, 0, 0],)
+                # ax0.set_title('pos x')
+                # ax1.plot(picker_position_list[:, 0, 1])
+                # ax1.set_title('pos z')
+                # ax2.plot(picker_position_list[:, 0, 2])
+                # ax2.set_title('pos y')
+                # ax3.plot(np.diff(np.diff(picker_position_list[:, 0, 0])/self.dt)/self.dt)
+                # ax3.set_title('vel x')
+                # ax4.plot(np.diff(np.diff(picker_position_list[:, 0, 1])/self.dt)/self.dt)
+                # ax4.set_title('vel z')
+                # ax5.plot(np.diff(np.diff(picker_position_list[:, 0, 2])/self.dt)/self.dt)
+                # ax5.set_title('vel y')
+                # plt.savefig(os.path.join(rollout_dir, 'picker_position.png'))
+                # plt.close(fig)
+                #
+                # plt.plot(picker_position_list[:, 0, 0], picker_position_list[:, 0, 1])
+                # plt.savefig(os.path.join(rollout_dir, 'X-Z.png'))
+                # plt.close(fig)
 
             # the last step has no action, and is not used in training
             prev_data['action'], prev_data['velocities'] = 0, 0
@@ -202,19 +195,16 @@ class DataCollector(object):
 
         """ Policy for collecting data - random sampling"""
 
-        middle_position_xy_translation = np.random.uniform(0.2, 0.6)
-        middle_position_z_ratio = np.random.uniform(0.2, 0.5)
-
-        middle_position_xy_translation = 0.35
-        middle_position_z_ratio = 0.35
+        xy_trans = np.random.uniform(0.2, 0.4)
+        z_ratio = np.random.uniform(0.2, 0.5)
 
         norm_direction = np.array([target_picker_position[1, 2] - target_picker_position[0, 2],
                                    target_picker_position[0, 0] - target_picker_position[1, 0]]) / \
                          np.linalg.norm(np.array([target_picker_position[1, 2] - target_picker_position[0, 2],
                                                   target_picker_position[0, 0] - target_picker_position[1, 0]]))
         middle_state = target_picker_position.copy()
-        middle_state[:, [0, 2]] = target_picker_position[:, [0, 2]] + middle_position_xy_translation * norm_direction
-        middle_state[:, 1] = current_picker_position[:, 1] + middle_position_z_ratio * (
+        middle_state[:, [0, 2]] = target_picker_position[:, [0, 2]] + xy_trans * norm_direction
+        middle_state[:, 1] = current_picker_position[:, 1] + z_ratio * (
                     target_picker_position[:, 1] - current_picker_position[:, 1])
 
         trajectory_start_to_middle = self._trajectory_generation(current_picker_position, middle_state,
@@ -235,7 +225,6 @@ class DataCollector(object):
             action_list.append(action)
 
         action_list = np.array(action_list)
-        action_list += np.random.normal(0, 0.003, size=(len(action_list), 8))
         action_list[:,[3,7]] = 1
         return action_list
 

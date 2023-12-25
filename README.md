@@ -1,4 +1,4 @@
-<h1> Learning Visible Connectivity Dynamics for Cloth Smoothing</h1>
+<h1> Dynamic Manipulation for Deformable Objecsts Leveraging Interaction</h1>
 
 # Table of Contents
 - 1 [Simulation](#simulation)
@@ -56,10 +56,4 @@ python VCD/main.py --gen_data=0 --dataf=./data/vcd --train_mode=graph_imit --ful
 ## Pretrained Model
 Please refer to [this page](pretrained/README.md) for downloading the pretrained models.
 
-## Demo
-* Dynamics rollout  
-  ![](pretrained/vis_dynamics.gif)
-* Planning on square cloth  
-  ![](pretrained/vis_planning.gif)
-## Cite
 If you find this codebase useful in your research, please consider citing:
