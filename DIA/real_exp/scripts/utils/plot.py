@@ -36,11 +36,11 @@ traj_desired_z = traj_desired[:,3]
 
 traj_log_x_index = (traj_log_x_index - traj_log_x_index[0]) *(-1)
 traj_log_y_index = (traj_log_y_index - traj_log_y_index[0]) *(-1)
-traj_log_z_index = traj_log_z_index - 0.06
+traj_log_z_index = traj_log_z_index - traj_log_z_index[-1]
 
 traj_desired_x = (traj_desired_x - traj_desired_x[0]) *(-1)
 traj_desired_y = (traj_desired_y - traj_desired_y[0]) *(-1)
-traj_desired_z = traj_desired_z - 0.06
+traj_desired_z = traj_desired_z - traj_desired_z[-1]
 
 
 log_x_vel = np.diff(traj_log_x_index)*100

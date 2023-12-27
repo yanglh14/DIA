@@ -41,10 +41,13 @@ class DataCollector(object):
         np.random.seed(0)
         rollout_idx = 0
         while rollout_idx < self.n_rollout:
+            ## Todo: test sim2real stiffness range, delete after test
             print("{} / {}".format(rollout_idx, self.n_rollout))
             rollout_dir = os.path.join(self.data_dir, str(rollout_idx))
+            rollout_dir = os.path.join(self.data_dir, 'img')
+
             os.system('mkdir -p ' + rollout_dir)
-            self.env.reset()
+            self.env.reset(config_id=rollout_idx)
             prev_data = self.get_curr_env_data()  # Get new picker position
 
             if self.args.gen_gif:
@@ -71,7 +74,7 @@ class DataCollector(object):
 
                 prev_data['velocities'] = (curr_data['positions'] - prev_data['positions']) / self.dt
                 prev_data['action'] = action
-                store_h5_data(self.data_names, prev_data, os.path.join(rollout_dir, str(j - 1) + '.h5'))
+                # store_h5_data(self.data_names, prev_data, os.path.join(rollout_dir, str(j - 1) + '.h5'))
                 prev_data = curr_data
 
                 if self.args.gen_gif:
@@ -92,13 +95,13 @@ class DataCollector(object):
                                                     self.env.camera_height, self.env.camera_width,
                                                     self.env._get_key_point_idx())
 
-                save_numpy_as_gif(frames_rgb, os.path.join(rollout_dir, 'rgb.gif'))
+                save_numpy_as_gif(frames_rgb, os.path.join(rollout_dir, 'Stiffness-{}-mass-{}.gif'.format(current_config['ClothStiff'], current_config['mass'])))
 
-                self._save_gifs_picker_traj(rollout_dir, frames_rgb, frames_depth, frames_top, frames_side, picker_position_list)
+                # self._save_gifs_picker_traj(rollout_dir, frames_rgb, frames_depth, frames_top, frames_side, picker_position_list)
 
             # the last step has no action, and is not used in training
             prev_data['action'], prev_data['velocities'] = 0, 0
-            store_h5_data(self.data_names, prev_data, os.path.join(rollout_dir, str(self.args.time_step - 1) + '.h5'))
+            # store_h5_data(self.data_names, prev_data, os.path.join(rollout_dir, str(self.args.time_step - 1) + '.h5'))
             rollout_idx += 1
 
     def get_curr_env_data(self):
@@ -288,7 +291,7 @@ class DataCollector(object):
         # plot the picker position and vel in 3 axis
 
         fig, ((ax0, ax1, ax2), (ax3, ax4, ax5)) = plt.subplots(nrows=2, ncols=3, sharex=True, figsize=(12, 6))
-        ax0.plot(picker_position_list[:, 0], )
+        ax0.plot(picker_position_list[:, 0])
         ax0.set_title('pos x')
         ax1.plot(picker_position_list[:, 1])
         ax1.set_title('pos z')

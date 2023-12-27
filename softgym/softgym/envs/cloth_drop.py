@@ -18,6 +18,7 @@ class ClothDropEnv(ClothEnv):
         self.vary_cloth_size = kwargs['vary_cloth_size']
         self.vary_stiffness = kwargs['vary_stiffness']
         self.vary_orientation = kwargs['vary_orientation']
+        self.vary_mass = kwargs['vary_mass']
         self.env_shape = kwargs['env_shape']
         # self.particle_radius = kwargs['particle_radius']
 
@@ -43,12 +44,12 @@ class ClothDropEnv(ClothEnv):
             else:
                 cloth_dimx, cloth_dimy = config['ClothSize']
 
-            if self.vary_stiffness:
-                # config['ClothStiff'] = [np.random.uniform(0.5, 2.0), np.random.uniform(0.5, 2.0),
-                #                                 np.random.uniform(0.5, 2.0)]
-                _stiffness = [0.5 + i * (1.5/num_variations) for i in range(num_variations)]
+            if self.vary_mass:
+                config['mass'] = np.random.uniform(0.05, 0.5)
 
-                config['ClothStiff'][0] = _stiffness[i]
+            if self.vary_stiffness:
+                config['ClothStiff'] = [np.random.uniform(0.2, 3.0), np.random.uniform(0.5, 3.0),
+                                                np.random.uniform(0.2, 3.0)]
 
             self.set_scene(config)
             self.action_tool.reset([0., -1., 0.])
@@ -58,10 +59,9 @@ class ClothDropEnv(ClothEnv):
             else:
                 rot_angle = 0
 
-            config['rot_angle'] = rot_angle
-            config['env_shape'] = self.env_shape
             x_target = np.random.uniform(0.05, 0.15)
 
+            # Todo: delete this after testing
             x_target = 0.1
             rot_angle = np.pi/12
             if self.env_shape == 'platform':
@@ -116,8 +116,11 @@ class ClothDropEnv(ClothEnv):
             flat_pos = self._set_to_flat(x_target=x_target, delta_z= z_target, rot_angle=rot_angle)
 
             pickpoints = self._get_drop_point_idx()[:2]  # Pick two corners of the cloth and wait until stablize
+
             config['x_target'] = x_target
             config['target_picker_pos'] = flat_pos[pickpoints, :3] + np.array([0., self.action_tool.picker_radius, 0.])
+            config['rot_angle'] = rot_angle
+            config['env_shape'] = self.env_shape
 
             # wait to stablize
             for _ in range(max_wait_step):
@@ -196,6 +199,9 @@ class ClothDropEnv(ClothEnv):
         return curr_pos
 
     def _set_to_vertical(self, x_low, height_low, height_high):
+        # Todo: delete this after testing
+        x_low = 0
+        height_low = 0.15
 
         curr_pos = pyflex.get_positions().reshape((-1, 4))
         vertical_pos = self._get_vertical_pos(x_low, height_low)
@@ -283,9 +289,9 @@ class ClothDropEnv(ClothEnv):
     def get_default_config(self):
         """ Set the default config of the environment and load it to self.config """
         config = {
-            'ClothPos': [-1.6, 2.0, -0.8],
-            'ClothSize': [36, 48],
-            'ClothStiff': [0.9, 0.1, 0.9],  # Stretch, Bend and Shear
+            'ClothPos': [0, 0, 0],
+            'ClothSize': [48, 56],
+            'ClothStiff': [0.9, 1.0, 0.9],  # Stretch, Bend and Shear
             'camera_name': 'default_camera',
             # 'camera_params': {'default_camera':
             #                       {'pos': np.array([1.07199, 0.94942, 1.15691]),

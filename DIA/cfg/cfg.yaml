@@ -20,6 +20,7 @@ env:
   vary_cloth_size: false # Whether to vary the size of the cloth
   vary_stiffness: false # Whether to vary the stiffness of the cloth
   vary_orientation: false # Whether to vary the target orientation of the cloth
+  vary_mass: false # Whether to vary the mass of the cloth
   picker_threshold: 0.625 # always pick a particle
   picker_radius: 0.01
 

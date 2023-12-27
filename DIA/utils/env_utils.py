@@ -24,7 +24,7 @@ def create_env(args):
     env_args['vary_cloth_size'] = args.vary_cloth_size
     env_args['vary_stiffness'] = args.vary_stiffness
     env_args['vary_orientation'] = args.vary_orientation
-
+    env_args['vary_mass'] = args.vary_mass
     return SOFTGYM_ENVS[args.env_name](**env_args)
 
 def create_env_plan(args):
@@ -52,6 +52,8 @@ def create_env_plan(args):
     env_args['vary_cloth_size'] = args.vary_cloth_size
     env_args['vary_stiffness'] = args.vary_stiffness
     env_args['vary_orientation'] = args.vary_orientation
+    env_args['vary_mass'] = args.vary_mass
+
     env = SOFTGYM_ENVS[args.env_name](**env_args)
 
     render_env_kwargs = copy.deepcopy(env_args)

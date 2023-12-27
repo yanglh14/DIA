@@ -7,7 +7,8 @@ def gen_data(args):
 
     collectors = {phase: DataCollector(args.dataset, phase, env) for phase in ['train', 'valid']}
 
-    for phase in ['train', 'valid']:
+    # Todo: add test phase
+    for phase in ['train']:
         collectors[phase].gen_dataset()
 
     print('Dataset generated in', args.dataset.dataf)
