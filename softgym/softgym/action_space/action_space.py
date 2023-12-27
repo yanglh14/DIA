@@ -139,7 +139,7 @@ class Picker(ActionToolBase):
         shape_states[:2, :3] = picker_pos
         pyflex.set_shape_states(shape_states)
 
-    def step(self, action):
+    def step_origin(self, action):
         """ action = [translation, pick/unpick] * num_pickers.
         1. Determine whether to pick/unpick the particle and which one, for each picker
         2. Update picker pos
@@ -177,7 +177,7 @@ class Picker(ActionToolBase):
                             self.picked_particles[i] = int(pick_id)
 
                 if self.picked_particles[i] is not None:
-                    # TODO The position of the particle needs to be updated such that it is close to the picker particle
+
                     new_particle_pos[self.picked_particles[i], :3] = particle_pos[self.picked_particles[i], :3] + new_picker_pos[i, :] - picker_pos[i,:]
 
                     new_particle_pos[self.picked_particles[i], 3] = 0  # Set the mass to infinity
@@ -205,7 +205,23 @@ class Picker(ActionToolBase):
                         new_particle_pos[picked_particle_idices[j], :3] = particle_pos[picked_particle_idices[j], :3].copy()
 
         self._set_pos(new_picker_pos, new_particle_pos)
+    def step(self, action):
+        """ action = [translation, pick/unpick] * num_pickers.
+        given picked_particles, neighbor particles will move together
+        """
+        picked_particles = [i* 64 for i in range(3)] + [i* 64 for i in range(64-3, 64)]
+        action = np.reshape(action, [-1, 4])
+        picker_pos, particle_pos = self._get_pos()
+        new_picker_pos, new_particle_pos = picker_pos.copy(), particle_pos.copy()
 
+        for i in range(self.num_picker):
+            new_picker_pos[i, :] = self._apply_picker_boundary(picker_pos[i, :] + action[i, :3])
+
+        if picked_particles is not None:
+            new_particle_pos[picked_particles, :3] = particle_pos[picked_particles, :3] + new_picker_pos[0, :] - picker_pos[0,:]
+            new_particle_pos[picked_particles, 3] = 0  # Set the mass to infinity
+
+        self._set_pos(new_picker_pos, new_particle_pos)
 
 class PickerPickPlace(Picker):
     def __init__(self, num_picker, env=None, picker_low=None, picker_high=None, delta_move=0.01, **kwargs):

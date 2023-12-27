@@ -105,7 +105,7 @@ class TrajectoryClient:
         self.cartesian_trajectory_controller = CARTESIAN_TRAJECTORY_CONTROLLERS[1]
 
         self.trajectory_log = []
-        self.pose_init = np.array([-0.1, -0.5, 0.46, 1, 0, 0, 0])
+        self.pose_init = np.array([-0.1, -0.5, 0.55, 1, 0, 0, 0])
         self.pose_init[3:] = euler2quat(np.pi, 0, 90/180*np.pi)
 
         self.dt = 0.01
@@ -205,7 +205,7 @@ class TrajectoryClient:
         """ Version 2 - fixed max acceleration and float time step"""
 
         self.target_theta = np.random.uniform(-np.pi / 12, np.pi / 12)
-        self.target_theta = np.pi / 12
+        self.target_theta = 0 * np.pi / 12
 
         bias = np.random.uniform(0.05, 0.15)
         bias = 0.1

@@ -51,6 +51,9 @@ class ClothDropEnv(ClothEnv):
                 config['ClothStiff'] = [np.random.uniform(0.2, 3.0), np.random.uniform(0.5, 3.0),
                                                 np.random.uniform(0.2, 3.0)]
 
+            config['mass'] = 0.075
+            config['ClothStiff'] = [0.9, 1.0, 0.3]
+
             self.set_scene(config)
             self.action_tool.reset([0., -1., 0.])
 
@@ -63,7 +66,7 @@ class ClothDropEnv(ClothEnv):
 
             # Todo: delete this after testing
             x_target = 0.1
-            rot_angle = np.pi/12
+            rot_angle = 0
             if self.env_shape == 'platform':
 
                 box_size = np.array([0.20, 0.02, 0.20])
@@ -148,15 +151,15 @@ class ClothDropEnv(ClothEnv):
             self.action_tool.set_picker_pos(picker_pos=pickpoint_pos + np.array([0., picker_radius, 0.]))
 
             # Pick up the cloth and wait to stablize
-            for j in range(0, max_wait_step):
-                pyflex.step()
-                pyflex.render()
-                curr_pos = pyflex.get_positions().reshape((-1, 4))
-                curr_vel = pyflex.get_velocities().reshape((-1, 3))
-                if np.alltrue(curr_vel < stable_vel_threshold) and j > 300:
-                    break
-                curr_pos[pickpoints, :3] = pickpoint_pos
-                pyflex.set_positions(curr_pos)
+            # for j in range(0, max_wait_step):
+            #     pyflex.step()
+            #     pyflex.render()
+            #     curr_pos = pyflex.get_positions().reshape((-1, 4))
+            #     curr_vel = pyflex.get_velocities().reshape((-1, 3))
+            #     if np.alltrue(curr_vel < stable_vel_threshold) and j > 300:
+            #         break
+            #     curr_pos[pickpoints, :3] = pickpoint_pos
+            #     pyflex.set_positions(curr_pos)
             curr_pos = pyflex.get_positions().reshape((-1, 4))
             curr_pos[pickpoints, 3] = original_inv_mass
             pyflex.set_positions(curr_pos.flatten())
@@ -201,7 +204,7 @@ class ClothDropEnv(ClothEnv):
     def _set_to_vertical(self, x_low, height_low, height_high):
         # Todo: delete this after testing
         x_low = 0
-        height_low = 0.15
+        height_low = 0.1
 
         curr_pos = pyflex.get_positions().reshape((-1, 4))
         vertical_pos = self._get_vertical_pos(x_low, height_low)
@@ -290,7 +293,7 @@ class ClothDropEnv(ClothEnv):
         """ Set the default config of the environment and load it to self.config """
         config = {
             'ClothPos': [0, 0, 0],
-            'ClothSize': [48, 56],
+            'ClothSize': [64, 64],
             'ClothStiff': [0.9, 1.0, 0.9],  # Stretch, Bend and Shear
             'camera_name': 'default_camera',
             # 'camera_params': {'default_camera':

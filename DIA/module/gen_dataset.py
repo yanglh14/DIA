@@ -97,7 +97,7 @@ class DataCollector(object):
 
                 save_numpy_as_gif(frames_rgb, os.path.join(rollout_dir, 'Stiffness-{}-mass-{}.gif'.format(current_config['ClothStiff'], current_config['mass'])))
 
-                # self._save_gifs_picker_traj(rollout_dir, frames_rgb, frames_depth, frames_top, frames_side, picker_position_list)
+                self._save_gifs_picker_traj(rollout_dir, frames_rgb, frames_depth, frames_top, frames_side, picker_position_list)
 
             # the last step has no action, and is not used in training
             prev_data['action'], prev_data['velocities'] = 0, 0
@@ -273,39 +273,38 @@ class DataCollector(object):
         # save_numpy_as_gif(np.array(frames_depth) * 255., os.path.join(rollout_dir, 'depth.gif'))
         #
         # save_numpy_as_gif(np.array(frames_top), os.path.join(rollout_dir, 'rgb_top.gif'))
+
+        matrix_world_to_camera = get_matrix_world_to_camera(cam_angle=np.array([0, 0, 0]), cam_pos=np.array([0.3,0.3, 1.5]))
+
+        frames_side = np.array(frames_side)
+        for t in range(len(frames_side)):
+            frames_side[t], mid_index = draw_traj_pos(frames_side[t], np.array(picker_position_list)[t:,1,:],
+                                            matrix_world_to_camera[:3, :],
+                                            self.env.camera_height, self.env.camera_width)
+            if t ==0:
+                index = mid_index
+        save_numpy_as_gif(frames_side[:], os.path.join(rollout_dir, 'rgb_side.gif'))
+
+        # picker_position_list = np.average(picker_position_list, axis=1)
         #
-        # matrix_world_to_camera = get_matrix_world_to_camera(cam_angle=np.array([0, 0, 0]), cam_pos=np.array([0.3,0.3, 1.5]))
+        # # plot the picker position and vel in 3 axis
         #
-        # frames_side = np.array(frames_side)
-        # for t in range(len(frames_side)):
-        #     frames_side[t], mid_index = draw_traj_pos(frames_side[t], np.array(picker_position_list)[t:,1,:],
-        #                                     matrix_world_to_camera[:3, :],
-        #                                     self.env.camera_height, self.env.camera_width)
-        #     if t ==0:
-        #         index = mid_index
-        # save_numpy_as_gif(frames_side[:index], os.path.join(rollout_dir, 'rgb_side_swing.gif'))
-        # save_numpy_as_gif(frames_side[index:], os.path.join(rollout_dir, 'rgb_side_pull.gif'))
-
-        picker_position_list = np.average(picker_position_list, axis=1)
-
-        # plot the picker position and vel in 3 axis
-
-        fig, ((ax0, ax1, ax2), (ax3, ax4, ax5)) = plt.subplots(nrows=2, ncols=3, sharex=True, figsize=(12, 6))
-        ax0.plot(picker_position_list[:, 0])
-        ax0.set_title('pos x')
-        ax1.plot(picker_position_list[:, 1])
-        ax1.set_title('pos z')
-        ax2.plot(picker_position_list[:, 2])
-        ax2.set_title('pos y')
-        ax3.plot(np.diff(np.diff(picker_position_list[:, 0]) / self.dt) / self.dt)
-        ax3.set_title('vel x')
-        ax4.plot(np.diff(np.diff(picker_position_list[:, 1]) / self.dt) / self.dt)
-        ax4.set_title('vel z')
-        ax5.plot(np.diff(np.diff(picker_position_list[:, 2]) / self.dt) / self.dt)
-        ax5.set_title('vel y')
-        plt.savefig(os.path.join(rollout_dir, 'picker_position.png'))
-        plt.close(fig)
-
-        plt.plot(picker_position_list[:, 0], picker_position_list[:, 1])
-        plt.savefig(os.path.join(rollout_dir, 'X-Z.png'))
-        plt.close()
+        # fig, ((ax0, ax1, ax2), (ax3, ax4, ax5)) = plt.subplots(nrows=2, ncols=3, sharex=True, figsize=(12, 6))
+        # ax0.plot(picker_position_list[:, 0])
+        # ax0.set_title('pos x')
+        # ax1.plot(picker_position_list[:, 1])
+        # ax1.set_title('pos z')
+        # ax2.plot(picker_position_list[:, 2])
+        # ax2.set_title('pos y')
+        # ax3.plot(np.diff(np.diff(picker_position_list[:, 0]) / self.dt) / self.dt)
+        # ax3.set_title('vel x')
+        # ax4.plot(np.diff(np.diff(picker_position_list[:, 1]) / self.dt) / self.dt)
+        # ax4.set_title('vel z')
+        # ax5.plot(np.diff(np.diff(picker_position_list[:, 2]) / self.dt) / self.dt)
+        # ax5.set_title('vel y')
+        # plt.savefig(os.path.join(rollout_dir, 'picker_position.png'))
+        # plt.close(fig)
+        #
+        # plt.plot(picker_position_list[:, 0], picker_position_list[:, 1])
+        # plt.savefig(os.path.join(rollout_dir, 'X-Z.png'))
+        # plt.close()
