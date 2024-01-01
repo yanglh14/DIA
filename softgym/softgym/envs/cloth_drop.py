@@ -50,9 +50,10 @@ class ClothDropEnv(ClothEnv):
             if self.vary_stiffness:
                 config['ClothStiff'] = [np.random.uniform(0.2, 3.0), np.random.uniform(0.5, 3.0),
                                                 np.random.uniform(0.2, 3.0)]
+                config['ClothStiff'] = [2.0, [0.01+ x*(2.0/num_variations) for x in range(num_variations)][i], 2.0]
 
             config['mass'] = 0.075
-            config['ClothStiff'] = [0.9, 1.0, 0.3]
+            # config['ClothStiff'] = [2.0, 0.3, 2.0]
 
             self.set_scene(config)
             self.action_tool.reset([0., -1., 0.])
@@ -151,15 +152,16 @@ class ClothDropEnv(ClothEnv):
             self.action_tool.set_picker_pos(picker_pos=pickpoint_pos + np.array([0., picker_radius, 0.]))
 
             # Pick up the cloth and wait to stablize
-            # for j in range(0, max_wait_step):
-            #     pyflex.step()
-            #     pyflex.render()
-            #     curr_pos = pyflex.get_positions().reshape((-1, 4))
-            #     curr_vel = pyflex.get_velocities().reshape((-1, 3))
-            #     if np.alltrue(curr_vel < stable_vel_threshold) and j > 300:
-            #         break
-            #     curr_pos[pickpoints, :3] = pickpoint_pos
-            #     pyflex.set_positions(curr_pos)
+            for j in range(0, max_wait_step):
+                pyflex.step()
+                pyflex.render()
+                curr_pos = pyflex.get_positions().reshape((-1, 4))
+                curr_vel = pyflex.get_velocities().reshape((-1, 3))
+                if np.alltrue(curr_vel < stable_vel_threshold) and j > 300:
+                    break
+                curr_pos[pickpoints, :3] = pickpoint_pos
+                pyflex.set_positions(curr_pos)
+
             curr_pos = pyflex.get_positions().reshape((-1, 4))
             curr_pos[pickpoints, 3] = original_inv_mass
             pyflex.set_positions(curr_pos.flatten())
@@ -204,7 +206,7 @@ class ClothDropEnv(ClothEnv):
     def _set_to_vertical(self, x_low, height_low, height_high):
         # Todo: delete this after testing
         x_low = 0
-        height_low = 0.1
+        height_low = 0.15
 
         curr_pos = pyflex.get_positions().reshape((-1, 4))
         vertical_pos = self._get_vertical_pos(x_low, height_low)

@@ -209,7 +209,7 @@ class Picker(ActionToolBase):
         """ action = [translation, pick/unpick] * num_pickers.
         given picked_particles, neighbor particles will move together
         """
-        picked_particles = [i* 64 for i in range(3)] + [i* 64 for i in range(64-3, 64)]
+        picked_particles = [i* 64 for i in range(1)] + [i* 64 for i in range(64-1, 64)]
         action = np.reshape(action, [-1, 4])
         picker_pos, particle_pos = self._get_pos()
         new_picker_pos, new_particle_pos = picker_pos.copy(), particle_pos.copy()

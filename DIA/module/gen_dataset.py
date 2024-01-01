@@ -97,7 +97,7 @@ class DataCollector(object):
 
                 save_numpy_as_gif(frames_rgb, os.path.join(rollout_dir, 'Stiffness-{}-mass-{}.gif'.format(current_config['ClothStiff'], current_config['mass'])))
 
-                self._save_gifs_picker_traj(rollout_dir, frames_rgb, frames_depth, frames_top, frames_side, picker_position_list)
+                self._save_gifs_picker_traj(rollout_dir, frames_rgb, frames_depth, frames_top, frames_side, picker_position_list, current_config)
 
             # the last step has no action, and is not used in training
             prev_data['action'], prev_data['velocities'] = 0, 0
@@ -163,8 +163,8 @@ class DataCollector(object):
         xy_trans = np.random.uniform(0.1, 0.3)
         z_ratio = np.random.uniform(0.2, 0.5)
 
-        xy_trans = 0.2
-        z_ratio = 0.3
+        xy_trans = 0.3
+        z_ratio = 0.2
 
         norm_direction = np.array([target_picker_position[1, 2] - target_picker_position[0, 2],
                                    target_picker_position[0, 0] - target_picker_position[1, 0]]) / \
@@ -181,9 +181,14 @@ class DataCollector(object):
         trajectory_middle_to_target = self._generate_trajectory(middle_state, target_picker_position,
                                                             self.pull_acc, self.dt)
 
+        traj_z = self._generate_traj_z(current_picker_position[0, 1], middle_state[0, 1], target_picker_position[0, 1], len(trajectory_start_to_middle)-1, len(trajectory_middle_to_target)-1, self.dt)
+
         # cat trajectory_xy and trajectory_z
         trajectory = np.concatenate((trajectory_start_to_middle, trajectory_middle_to_target[1:]), axis=0)
         trajectory = trajectory.reshape(trajectory.shape[0], -1)
+
+        trajectory[:, 1] = traj_z
+        trajectory[:, 4] = traj_z
 
         action_list = []
         for step in range(1, trajectory.shape[0]):
@@ -261,6 +266,31 @@ class DataCollector(object):
 
         return positions_xzy
 
+    def _generate_traj_z(self, start_z, mid_z, end_z, steps_s2m, steps_m2e, dt):
+
+        steps = steps_s2m + steps_m2e
+        v_max = (end_z - start_z) * 2 / (steps * dt)
+        accelerate = v_max**2 / ( 2 * (mid_z - start_z))
+        decelerate = -v_max**2 / ( 2 * (end_z - mid_z))
+
+        steps_s2m = int(v_max / accelerate / dt)
+        steps_m2e = steps - steps_s2m
+
+        position_z = [start_z]
+        _v = 0
+        for i in range(steps):
+            if i < steps_s2m:
+                # Acceleration phase
+                _v += accelerate * dt
+                position_z.append(position_z[-1] + _v * dt)
+            else:
+                # Deceleration phase
+                _v += decelerate * dt
+
+                position_z.append(position_z[-1] + _v * dt)
+
+        return position_z
+
     def _data_test(self, data):
         """ Filter out cases where cloth is moved out of the view or when number of voxelized particles is larger than number of partial particles"""
         pointcloud = data['pointcloud']
@@ -269,7 +299,7 @@ class DataCollector(object):
             return False
         return True
 
-    def _save_gifs_picker_traj(self, rollout_dir, frames_rgb, frames_depth, frames_top, frames_side, picker_position_list):
+    def _save_gifs_picker_traj(self, rollout_dir, frames_rgb, frames_depth, frames_top, frames_side, picker_position_list, current_config):
         # save_numpy_as_gif(np.array(frames_depth) * 255., os.path.join(rollout_dir, 'depth.gif'))
         #
         # save_numpy_as_gif(np.array(frames_top), os.path.join(rollout_dir, 'rgb_top.gif'))
@@ -283,28 +313,28 @@ class DataCollector(object):
                                             self.env.camera_height, self.env.camera_width)
             if t ==0:
                 index = mid_index
-        save_numpy_as_gif(frames_side[:], os.path.join(rollout_dir, 'rgb_side.gif'))
+        save_numpy_as_gif(frames_side[:], os.path.join(rollout_dir, 'img-side-Stiffness-{}-mass-{}.gif'.format(current_config['ClothStiff'], current_config['mass'])))
 
-        # picker_position_list = np.average(picker_position_list, axis=1)
-        #
-        # # plot the picker position and vel in 3 axis
-        #
-        # fig, ((ax0, ax1, ax2), (ax3, ax4, ax5)) = plt.subplots(nrows=2, ncols=3, sharex=True, figsize=(12, 6))
-        # ax0.plot(picker_position_list[:, 0])
-        # ax0.set_title('pos x')
-        # ax1.plot(picker_position_list[:, 1])
-        # ax1.set_title('pos z')
-        # ax2.plot(picker_position_list[:, 2])
-        # ax2.set_title('pos y')
-        # ax3.plot(np.diff(np.diff(picker_position_list[:, 0]) / self.dt) / self.dt)
-        # ax3.set_title('vel x')
-        # ax4.plot(np.diff(np.diff(picker_position_list[:, 1]) / self.dt) / self.dt)
-        # ax4.set_title('vel z')
-        # ax5.plot(np.diff(np.diff(picker_position_list[:, 2]) / self.dt) / self.dt)
-        # ax5.set_title('vel y')
-        # plt.savefig(os.path.join(rollout_dir, 'picker_position.png'))
-        # plt.close(fig)
-        #
-        # plt.plot(picker_position_list[:, 0], picker_position_list[:, 1])
-        # plt.savefig(os.path.join(rollout_dir, 'X-Z.png'))
-        # plt.close()
+        picker_position_list = np.average(picker_position_list, axis=1)
+
+        # plot the picker position and vel in 3 axis
+
+        fig, ((ax0, ax1, ax2), (ax3, ax4, ax5)) = plt.subplots(nrows=2, ncols=3, sharex=True, figsize=(12, 6))
+        ax0.plot(picker_position_list[:, 0])
+        ax0.set_title('pos x')
+        ax1.plot(picker_position_list[:, 1])
+        ax1.set_title('pos z')
+        ax2.plot(picker_position_list[:, 2])
+        ax2.set_title('pos y')
+        ax3.plot(np.diff(np.diff(picker_position_list[:, 0]) / self.dt) / self.dt)
+        ax3.set_title('vel x')
+        ax4.plot(np.diff(np.diff(picker_position_list[:, 1]) / self.dt) / self.dt)
+        ax4.set_title('vel z')
+        ax5.plot(np.diff(np.diff(picker_position_list[:, 2]) / self.dt) / self.dt)
+        ax5.set_title('vel y')
+        plt.savefig(os.path.join(rollout_dir, 'picker_position.png'))
+        plt.close(fig)
+
+        plt.plot(picker_position_list[:, 0], picker_position_list[:, 1])
+        plt.savefig(os.path.join(rollout_dir, 'X-Z.png'))
+        plt.close()
