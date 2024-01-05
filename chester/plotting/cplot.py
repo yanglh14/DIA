@@ -188,4 +188,4 @@ if __name__ == '__main__':
     leg = ax.legend(loc=loc, prop={'size': 15}, ncol=1, labels=group_legends)
     for legobj in leg.legendHandles:
         legobj.set_linewidth(3.0)
-    plt.savefig('test.png', bbox_inches='tight')
+    plt.savefig('rgb.png', bbox_inches='tight')

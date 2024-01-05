@@ -1,10 +1,6 @@
-import rospy
 from sensor_msgs.msg import PointCloud2
-from sensor_msgs.msg import Image as msg_Image
-from sensor_msgs.msg import CompressedImage as msg_CompressedImage
-from sensor_msgs.msg import PointCloud2 as msg_PointCloud2
 import sensor_msgs.point_cloud2 as pc2
-from sensor_msgs.msg import Imu as msg_Imu
+
 import rospy
 import cv2
 from sensor_msgs.msg import Image
@@ -16,8 +12,8 @@ import time
 
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
-import numpy as np
 
+from utils.rs_utils import object_detection
 def pc2_to_xyzrgb(point):
 	# Thanks to Panos for his code used in this function.
     x, y, z = point[:3]
@@ -38,53 +34,76 @@ class RSListener:
     def __init__(self):
 
         rospy.init_node('rs_listener', anonymous=True)
+        self.bridge = CvBridge()
 
+        self.mask = None
         self.data = []
 
-    def visulaize(self, point_cloud):
-
-        # Assuming you have a list/array of points named 'point_cloud'
-        # with each point being a list/array [x, y, z, r, g, b]
-        # For example: point_cloud = [[x1, y1, z1, r1, g1, b1], [x2, y2, z2, r2, g2, b2], ...]
-
-        # First, convert your point cloud to a numpy array for easier manipulation
-        point_cloud_np = np.array(point_cloud)
-
-        # Split your NumPy array into positions (x, y, z) and colors (r, g, b)
-        positions = point_cloud_np[:, :3]
-        colors = point_cloud_np[:, 3:] / 255.0  # Assuming color channels are 0-255, normalize to 0-1 for matplotlib
-
-        # Create a new matplotlib figure and axis.
-        fig = plt.figure()
-        ax = fig.add_subplot(111, projection='3d')
-
-        # Scatter plot using the x, y, and z coordinates and the color information
-        ax.scatter(positions[:, 0], positions[:, 1], positions[:, 2], c=colors, s=1)  # s is the size of the points
-
-        # Set labels for axes
-        ax.set_xlabel('X Label')
-        ax.set_ylabel('Y Label')
-        ax.set_zlabel('Z Label')
-
-        # Show the plot
-        plt.savefig('test.png')
-
-    def _pointscloudCallback(self, data):
+    def _pc_callback(self, data):
         # Read points from the point cloud data
 
-        self.data = np.array([pc2_to_xyzrgb(pp) for pp in pc2.read_points(data, skip_nans=True, field_names=("x", "y", "z", "rgb")) if pp[0] > 0])
-        print(self.data.shape)
+        cloud_array = np.array(
+            list(pc2.read_points(data, field_names=("x", "y", "z", "rgb"), skip_nans=False)))
 
-    def listener(self):
-        rospy.Subscriber("/camera/depth/color/points", PointCloud2, self._pointscloudCallback)
+        img = []
+        for point in cloud_array:
+            x, y, z, r, g, b = pc2_to_xyzrgb(point)
+            self.data.append([x, y, z, r, g, b])
+            img.append([r, g, b])
+        img = np.array(img).reshape((480, 848, 3))
+        # save img
+        cv2.imwrite('../log/rgb.png', img)
+
+        if self.mask is not None:
+            height_mask, width_mask = self.mask.shape
+            height,width = data.height, data.width
+            cloud_array = cloud_array.reshape((height, width, -1))
+            bias_height = int((height - height_mask)/2)
+            bias_width = int((width - width_mask)/2)
+            cloud_array = cloud_array[bias_height:bias_height+height_mask, bias_width:bias_width+width_mask, :3]
+            np.save('../log/rs_data.npy', cloud_array)
+
+        # # Initialize an empty list to hold points that are dark green
+        # obj_points = []
+
+        # Iterate over each point in the point cloud
+        # for point in pc2.read_points(data, field_names=("x", "y", "z", "rgb"), skip_nans=True):
+        #     # Extract RGB values
+        #     # The point_cloud2.read_points method returns RGB as a packed float, which is why we need to convert it
+        #     rgb_packed = struct.unpack('I', struct.pack('f', point[3]))[0]
+        #     r = (rgb_packed >> 16) & 0x0000ff
+        #     g = (rgb_packed >> 8) & 0x0000ff
+        #     b = (rgb_packed) & 0x0000ff
+        #     x, y, z = point[:3]
+        #
+        #     if z < 0.5 or z > 1.5 or y < -0.3 or y > 0.3 or x < -0.3 or x > 0.3:
+        #         continue
+        #
+        #     if self.mask is not None:
+        #         continue
+        # print(len(obj_points))
+        # np.save('../log/rs_data.npy', obj_points)
+
+    def _image_callback(self, data):
+        try:
+            # Convert the image to OpenCV format
+            image = self.bridge.imgmsg_to_cv2(data, "bgr8")
+        except CvBridgeError as e:
+            print(e)
+
+        self.mask = object_detection(image)
+        print(self.mask.shape)
+    def run(self):
+
+        self.image_sub = rospy.Subscriber("/camera/color/image_raw", Image, self._image_callback)
+        self.pc_sub = rospy.Subscriber("/camera/depth/color/points", PointCloud2, self._pc_callback)
 
         # Prevent the script from exiting until the node is shutdown
         try:
             rospy.spin()
         except KeyboardInterrupt:
             print("Shutting down depth image reader node.")
-        cv2.destroyAllWindows()
 
 if __name__ == '__main__':
     rs_listener = RSListener()
-    rs_listener.listener()
+    rs_listener.run()

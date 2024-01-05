@@ -110,7 +110,7 @@ class TrajectoryClient:
 
         self.dt = 0.01
         self.time_step = 150
-        self.swing_acc_max = 1.5
+        self.swing_acc_max = 2.0
         self.pull_acc_max = 0.5
 
     def move_to_init_pose(self):
@@ -205,10 +205,9 @@ class TrajectoryClient:
         """ Version 2 - fixed max acceleration and float time step"""
 
         self.target_theta = np.random.uniform(-np.pi / 12, np.pi / 12)
-        self.target_theta = 0 * np.pi / 12
+        self.target_theta = np.pi / 12
 
-        bias = np.random.uniform(0.05, 0.15)
-        bias = 0.1
+        bias = np.random.uniform(0.05, 0.10)
         target_pose = np.zeros(7)
         target_pose[0] = cur_pose[0] - bias * np.cos(self.target_theta)
         target_pose[1] = cur_pose[1] - bias * np.sin(self.target_theta)
@@ -221,10 +220,7 @@ class TrajectoryClient:
         # middle state sampling
 
         xy_trans = np.random.uniform(0.2, 0.4)
-        z_ratio = np.random.uniform(0.3, 0.7)
-
-        xy_trans = 0.2
-        z_ratio = 0.3
+        z_ratio = np.random.uniform(0.2, 0.5)
 
         middle_pose = target_pose.copy()
         middle_pose[0] = middle_pose[0] - xy_trans * np.cos(target_rot)
