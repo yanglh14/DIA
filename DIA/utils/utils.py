@@ -45,12 +45,11 @@ def extract_numbers(str):
 
 
 def voxelize_pointcloud(pointcloud, voxel_size):
-#     import pcl
-#     cloud = pcl.PointCloud(pointcloud)
-#     sor = cloud.make_voxel_grid_filter()
-#     sor.set_leaf_size(voxel_size, voxel_size, voxel_size)
-#     pointcloud = sor.filter()
-#     pointcloud = np.asarray(pointcloud).astype(np.float32)
+    # cloud = pcl.PointCloud(pointcloud)
+    # sor = cloud.make_voxel_grid_filter()
+    # sor.set_leaf_size(voxel_size, voxel_size, voxel_size)
+    # pointcloud = sor.filter()
+    # pointcloud = np.asarray(pointcloud).astype(np.float32)
     return pointcloud
 
 def voxelize_pointcloud_sp(pointcloud, voxel_size):

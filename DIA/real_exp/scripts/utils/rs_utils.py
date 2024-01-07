@@ -2,6 +2,22 @@ import numpy as np
 import cv2
 from matplotlib import pyplot as plt
 import cv2.aruco as aruco
+from scipy.spatial.transform import Rotation as R
+import yaml
+
+with open('../../cfg/transform.yaml', 'r') as file:
+    config = yaml.safe_load(file)
+
+ee_trans = config['EndEffector2Base']['translation']
+ee_rpy = config['EndEffector2Base']['rotation']
+
+rs435_bias = config['rs435_bias']
+
+camera_trans = config['Camera2EndEffector']['translation']
+camera_trans = [a + b for a, b in zip(camera_trans, rs435_bias)]
+
+camera_rpy = config['Camera2EndEffector']['rotation']
+
 
 # Define the range of yellow color in HSV
 yellow_lower = np.array([20, 100, 100], dtype="uint8")
@@ -91,19 +107,60 @@ def object_detection(image):
     cv2.drawContours(mask, [c], -1, color=255, thickness=-1)
 
     return mask
+
+def transform_point_cloud(point_cloud):
+    # Compute the transformation matrix
+    camera2ee = compute_transformation_matrix(camera_trans, camera_rpy)
+    ee2base = compute_transformation_matrix(ee_trans, ee_rpy)
+
+    # first transform from camera to ee, then from ee to base
+    tramsform_matrix = ee2base.dot(camera2ee)
+
+    # Convert point cloud to homogeneous coordinates (add a row of 1's)
+    ones = np.ones((point_cloud.shape[0], 1))
+    points_homogeneous = np.hstack((point_cloud, ones))
+
+    # Apply the transformation matrix to the point cloud
+    point_cloud_transformed_homogeneous = points_homogeneous.dot(tramsform_matrix.T)
+
+    # Convert back from homogeneous coordinates by dropping the last column
+    point_cloud_transformed = point_cloud_transformed_homogeneous[:, :3]
+
+    return point_cloud_transformed
+
+def compute_transformation_matrix(translation, rpy):
+    # Convert RPY angles from degrees to radians
+    rpy_rad = np.radians(rpy)
+
+    # Create a rotation object from RPY (assuming ZYX convention)
+    rotation = R.from_euler('zyx', rpy_rad)
+
+    # Convert to rotation matrix
+    rotation_matrix = rotation.as_matrix()
+
+    # Create the transformation matrix
+    transform_matrix = np.eye(4)
+    transform_matrix[:3, :3] = rotation_matrix
+    transform_matrix[:3, 3] = translation
+
+    return transform_matrix
+
 if __name__ == '__main__':
-    # Load the image
-    image = cv2.imread('../../log/rgb.png')
-
-    mask = object_detection(image)
-
-    # apply the mask to the image to see the result
-    # This will leave only the object, making all other pixels black
-    result = cv2.bitwise_and(image, image, mask=mask)
-
-    # Show the mask and the result
-    cv2.imshow('Mask', mask)
-    cv2.imshow('Result', result)
-
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    # # Load the image
+    # image = cv2.imread('../../log/rgb.png')
+    #
+    # mask = object_detection(image)
+    #
+    # # apply the mask to the image to see the result
+    # # This will leave only the object, making all other pixels black
+    # result = cv2.bitwise_and(image, image, mask=mask)
+    #
+    # # Show the mask and the result
+    # cv2.imshow('Mask', mask)
+    # cv2.imshow('Result', result)
+    #
+    # cv2.waitKey(0)
+    # cv2.destroyAllWindows()
+    point_cloud = np.load('../../log/rs_data.npy')
+    point_cloud = transform_point_cloud(point_cloud)
+    np.save('../../log/transformed_pc.npy', point_cloud)
